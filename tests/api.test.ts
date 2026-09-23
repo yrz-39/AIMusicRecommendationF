@@ -167,6 +167,66 @@ describe("API", () => {
     expect(history.stats.likes).toBe(1);
   });
 
+  it("特征学习：自然语言反馈写入曲目特征并可追溯", async () => {
+    const { app, store } = await makeSeededApp();
+    const tracks = await store.loadTracks();
+    const target = tracks.find((t) => t.energy !== undefined && t.energy < 0.4)!;
+
+    const res = await app.request(`/api/tracks/${target.id}/learn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "这首歌给我力气，能够提高精力，振奋精神" }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await json(res)) as { track: { energy?: number }; changes: string[] };
+    expect(data.track.energy!).toBeGreaterThan(target.energy!);
+    expect(data.changes.length).toBeGreaterThan(0);
+    // 学习事件持久化
+    const events = await store.loadLearnEvents();
+    expect(events.length).toBe(1);
+    expect(events[0]?.trackId).toBe(target.id);
+    expect(events[0]?.delta.energyHint).toBe("high");
+  });
+
+  it("特征学习：无法理解时 422 且不写入", async () => {
+    const { app, store } = await makeSeededApp();
+    const tracks = await store.loadTracks();
+    const res = await app.request(`/api/tracks/${tracks[0]!.id}/learn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "还行吧" }),
+    });
+    expect(res.status).toBe(422);
+    expect(await store.loadLearnEvents()).toEqual([]);
+  });
+
+  it("歌单接口：按时长预算返回完整歌单", async () => {
+    const { app } = await makeSeededApp();
+    const res = await app.request("/api/playlist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: "我现在精力比较低，要背书 40 分钟左右，想听安静的" }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await json(res)) as {
+      playlist: { tracks: Array<{ track: { durationSec: number } }>; totalSec: number; budgetMin: number };
+      context: { durationMinutes?: number };
+    };
+    expect(data.context.durationMinutes).toBe(40);
+    expect(data.playlist.budgetMin).toBe(40);
+    expect(data.playlist.tracks.length).toBeGreaterThan(5);
+    expect(data.playlist.totalSec).toBeGreaterThanOrEqual(35 * 60);
+    expect(data.playlist.totalSec).toBeLessThanOrEqual(42 * 60);
+  });
+
+  it("now-playing 接口优雅降级", async () => {
+    const { app } = await makeSeededApp();
+    const res = await app.request("/api/now-playing");
+    expect(res.status).toBe(200);
+    const data = (await json(res)) as { playing: boolean };
+    expect(typeof data.playing).toBe("boolean");
+  });
+
   it("反馈不存在的曲目返回 404", async () => {
     const { app } = await makeSeededApp();
     const res = await app.request("/api/feedback", {

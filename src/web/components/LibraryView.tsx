@@ -76,6 +76,31 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
     (t) => q === "" || t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q),
   );
 
+  const [learnTrackId, setLearnTrackId] = useState<string | null>(null);
+  const [learnText, setLearnText] = useState("");
+  const [learnMsg, setLearnMsg] = useState<string | null>(null);
+
+  const submitLearn = useCallback(async (): Promise<void> => {
+    if (learnTrackId === null || learnText.trim() === "") return;
+    setLearnMsg(null);
+    try {
+      const res = await fetch(`/api/tracks/${learnTrackId}/learn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: learnText }),
+      });
+      const data = (await res.json()) as { changes?: string[]; matched?: string[]; error?: string };
+      if (!res.ok) throw new Error(data.error ?? "学习失败");
+      setLearnMsg(`已学习：${(data.changes ?? []).join("；") || "无变化"}`);
+      setLearnText("");
+      await load();
+    } catch (err) {
+      setLearnMsg((err as Error).message);
+    }
+  }, [learnTrackId, learnText, load]);
+
+  const learnTrack = tracks?.find((t) => t.id === learnTrackId);
+
   return (
     <>
       <section className="input-card">
@@ -126,6 +151,35 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
         </div>
       </section>
 
+      {learnTrackId !== null && learnTrack !== undefined && (
+        <section className="input-card" style={{ borderColor: "rgba(240, 130, 150, 0.35)" }}>
+          <label>
+            教它 —— 「{learnTrack.title} · {learnTrack.artist}」给了你什么感受？
+          </label>
+          <textarea
+            id="status-input"
+            style={{ minHeight: 54 }}
+            value={learnText}
+            onChange={(e) => setLearnText(e.target.value)}
+            placeholder="例如：有力气，能够提高精力，振奋精神 / 很安静、能静下心 / 没有歌词"
+          />
+          <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center" }}>
+            <button
+              className="primary-btn"
+              style={{ marginTop: 0, width: "auto", padding: "8px 20px" }}
+              disabled={learnText.trim() === ""}
+              onClick={() => void submitLearn()}
+            >
+              学习
+            </button>
+            <button className="ghost-btn" onClick={() => { setLearnTrackId(null); setLearnMsg(null); }}>
+              取消
+            </button>
+            {learnMsg !== null && <span style={{ fontSize: 13, color: "var(--text-dim)" }}>{learnMsg}</span>}
+          </div>
+        </section>
+      )}
+
       <div className="lib-toolbar">
         <input
           type="text"
@@ -147,6 +201,7 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
               <th>风格</th>
               <th>能量</th>
               <th>时长</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -164,6 +219,15 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
                   </div>
                 </td>
                 <td>{formatDuration(t.durationSec)}</td>
+                <td>
+                  <button
+                    className="ghost-btn"
+                    style={{ padding: "3px 10px", fontSize: 12 }}
+                    onClick={() => { setLearnTrackId(t.id); setLearnMsg(null); setLearnText(""); }}
+                  >
+                    教它
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

@@ -1,18 +1,21 @@
 :root {
-  --bg: #0e1013;
-  --bg-soft: #14171d;
-  --card: #181c24;
-  --card-hover: #1d222c;
-  --border: rgba(255, 255, 255, 0.07);
-  --text: #e8eaf0;
-  --text-dim: #9aa3b2;
-  --text-faint: #6b7484;
-  --accent: #f0b45c;
-  --accent-soft: rgba(240, 180, 92, 0.14);
-  --blue: #7aa2f7;
-  --green: #7dcf9a;
-  --red: #e57373;
-  --radius: 14px;
+  /* 绘梨衣主题：樱花粉 + 奶白底 + 红发红瞳点缀 + 粉紫渐变辅助 */
+  --bg: #fdf3f4;
+  --bg-soft: #fbe9ec;
+  --card: #fffdfd;
+  --card-hover: #fff5f7;
+  --border: rgba(225, 130, 150, 0.18);
+  --text: #433038;
+  --text-dim: #77596a;
+  --text-faint: #9a7f8d;
+  --accent: #e8657f;
+  --accent-soft: rgba(232, 101, 127, 0.1);
+  --blue: #9b8fc9;
+  --green: #5cae8b;
+  --red: #d45d6e;
+  --grad-brand: linear-gradient(90deg, #e8657f, #b98fd4);
+  --grad-btn: linear-gradient(90deg, #f2849b, #ec7ba0);
+  --radius: 16px;
 }
 
 * {
@@ -27,8 +30,8 @@ body {
 
 body {
   background:
-    radial-gradient(1200px 500px at 70% -10%, rgba(122, 162, 247, 0.09), transparent 60%),
-    radial-gradient(900px 400px at 10% 0%, rgba(240, 180, 92, 0.06), transparent 55%),
+    radial-gradient(1100px 460px at 75% -8%, rgba(185, 143, 212, 0.13), transparent 60%),
+    radial-gradient(900px 420px at 8% -4%, rgba(240, 130, 150, 0.12), transparent 55%),
     var(--bg);
   color: var(--text);
   font-family: "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -59,13 +62,19 @@ body {
 }
 
 .brand h1 {
-  font-size: 24px;
+  font-size: 25px;
   margin: 0;
   letter-spacing: 0.5px;
-  background: linear-gradient(90deg, var(--accent), var(--blue));
+  background: var(--grad-brand);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+.brand h1::before {
+  content: "🌸 ";
+  font-size: 20px;
+  -webkit-text-fill-color: initial;
 }
 
 .brand .tagline {
@@ -102,6 +111,7 @@ body {
   font-size: 14px;
   cursor: pointer;
   transition: all 0.15s;
+  font-family: inherit;
 }
 
 .tab:hover {
@@ -110,17 +120,19 @@ body {
 
 .tab.active {
   background: var(--accent-soft);
-  border-color: rgba(240, 180, 92, 0.35);
+  border-color: rgba(232, 101, 127, 0.35);
   color: var(--accent);
+  font-weight: 600;
 }
 
-/* ---------- 输入卡片 ---------- */
+/* ---------- 卡片 ---------- */
 .input-card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 18px;
   margin-bottom: 16px;
+  box-shadow: 0 4px 18px rgba(232, 101, 127, 0.06);
 }
 
 .input-card label {
@@ -136,7 +148,7 @@ textarea#status-input {
   resize: vertical;
   background: var(--bg-soft);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   color: var(--text);
   font-size: 15px;
   font-family: inherit;
@@ -146,7 +158,8 @@ textarea#status-input {
 }
 
 textarea#status-input:focus {
-  border-color: rgba(240, 180, 92, 0.5);
+  border-color: rgba(232, 101, 127, 0.5);
+  background: #fff;
 }
 
 textarea#status-input::placeholder {
@@ -169,34 +182,58 @@ textarea#status-input::placeholder {
   border-radius: 999px;
   cursor: pointer;
   transition: all 0.15s;
+  font-family: inherit;
 }
 
 .example-chip:hover {
-  color: var(--text);
-  border-color: rgba(122, 162, 247, 0.4);
+  color: var(--accent);
+  border-color: rgba(232, 101, 127, 0.4);
 }
 
 .primary-btn {
   margin-top: 14px;
   width: 100%;
-  background: linear-gradient(90deg, rgba(240, 180, 92, 0.9), rgba(240, 160, 92, 0.9));
-  color: #1a1408;
+  background: var(--grad-btn);
+  color: #fff;
   border: none;
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 11px;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
-  transition: filter 0.15s;
+  transition: filter 0.15s, box-shadow 0.15s;
   font-family: inherit;
+  box-shadow: 0 4px 14px rgba(232, 101, 127, 0.25);
 }
 
 .primary-btn:hover:not(:disabled) {
-  filter: brightness(1.08);
+  filter: brightness(1.05);
 }
 
 .primary-btn:disabled {
   opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ghost-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 10px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: rgba(232, 101, 127, 0.4);
+}
+
+.ghost-btn:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
@@ -207,6 +244,7 @@ textarea#status-input::placeholder {
   border-radius: var(--radius);
   padding: 14px 18px;
   margin-bottom: 16px;
+  box-shadow: 0 4px 18px rgba(232, 101, 127, 0.05);
 }
 
 .context-panel h3 {
@@ -248,10 +286,10 @@ textarea#status-input::placeholder {
 .chip.gap {
   border-style: dashed;
   color: var(--text-dim);
-  border-color: rgba(154, 163, 178, 0.35);
+  border-color: rgba(141, 116, 128, 0.35);
 }
 
-/* ---------- 推荐卡片 ---------- */
+/* ---------- 推荐列表 ---------- */
 .result-header {
   display: flex;
   align-items: center;
@@ -265,39 +303,19 @@ textarea#status-input::placeholder {
   font-weight: 600;
 }
 
-.ghost-btn {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  border-radius: 8px;
-  padding: 6px 14px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.15s;
-  font-family: inherit;
-}
-
-.ghost-btn:hover:not(:disabled) {
-  color: var(--text);
-  border-color: rgba(255, 255, 255, 0.2);
-}
-
-.ghost-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .track-card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 18px;
   margin-bottom: 12px;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+  box-shadow: 0 3px 14px rgba(232, 101, 127, 0.05);
 }
 
 .track-card:hover {
   background: var(--card-hover);
+  border-color: rgba(232, 101, 127, 0.3);
 }
 
 .track-top {
@@ -322,7 +340,7 @@ textarea#status-input::placeholder {
 
 .rank.top {
   background: var(--accent-soft);
-  border-color: rgba(240, 180, 92, 0.4);
+  border-color: rgba(232, 101, 127, 0.45);
   color: var(--accent);
   font-weight: 700;
 }
@@ -359,7 +377,7 @@ textarea#status-input::placeholder {
 .genre-tag {
   font-size: 11.5px;
   color: var(--blue);
-  background: rgba(122, 162, 247, 0.1);
+  background: rgba(155, 143, 201, 0.12);
   padding: 1.5px 8px;
   border-radius: 999px;
 }
@@ -398,7 +416,7 @@ textarea#status-input::placeholder {
 .score-bar i {
   display: block;
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), rgba(240, 180, 92, 0.55));
+  background: linear-gradient(90deg, var(--accent), rgba(185, 143, 212, 0.7));
   border-radius: 2px;
 }
 
@@ -406,7 +424,7 @@ textarea#status-input::placeholder {
   margin: 12px 0 0 44px;
   padding: 10px 14px;
   background: var(--bg-soft);
-  border-radius: 10px;
+  border-radius: 12px;
   border: 1px solid var(--border);
 }
 
@@ -443,8 +461,8 @@ textarea#status-input::placeholder {
 }
 
 .fb-btn:hover:not(:disabled) {
-  color: var(--text);
-  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--accent);
+  border-color: rgba(232, 101, 127, 0.4);
 }
 
 .fb-btn:disabled {
@@ -452,21 +470,10 @@ textarea#status-input::placeholder {
   opacity: 0.9;
 }
 
-a.fb-btn {
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-}
-
-a.fb-btn:hover {
-  color: var(--accent);
-  border-color: rgba(240, 180, 92, 0.45);
-}
-
 .fb-btn.liked {
   color: var(--green);
-  border-color: rgba(125, 207, 154, 0.5);
-  background: rgba(125, 207, 154, 0.08);
+  border-color: rgba(92, 174, 139, 0.5);
+  background: rgba(92, 174, 139, 0.08);
 }
 
 .fb-btn.skipped {
@@ -477,8 +484,19 @@ a.fb-btn:hover {
 
 .fb-btn.rejected {
   color: var(--red);
-  border-color: rgba(229, 115, 115, 0.5);
-  background: rgba(229, 115, 115, 0.08);
+  border-color: rgba(212, 93, 110, 0.5);
+  background: rgba(212, 93, 110, 0.08);
+}
+
+a.fb-btn {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+a.fb-btn:hover {
+  color: var(--accent);
+  border-color: rgba(232, 101, 127, 0.45);
 }
 
 .fb-hint {
@@ -501,8 +519,8 @@ a.fb-btn:hover {
 }
 
 .error-box {
-  background: rgba(229, 115, 115, 0.08);
-  border: 1px solid rgba(229, 115, 115, 0.35);
+  background: rgba(212, 93, 110, 0.07);
+  border: 1px solid rgba(212, 93, 110, 0.35);
   color: var(--red);
   border-radius: 10px;
   padding: 10px 16px;
@@ -533,7 +551,7 @@ a.fb-btn:hover {
 }
 
 .lib-toolbar input[type="text"]:focus {
-  border-color: rgba(122, 162, 247, 0.5);
+  border-color: rgba(232, 101, 127, 0.5);
 }
 
 .lib-table {

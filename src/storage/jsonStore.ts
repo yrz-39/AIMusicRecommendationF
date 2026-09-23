@@ -2,6 +2,23 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { FeedbackEvent, RecommendationSession, Track } from "../core/types.js";
 
+/** 一条自然语言歌曲特征学习记录（PRODUCT.md 支柱 3 的数据基础） */
+export interface LearnEvent {
+  id: string;
+  trackId: string;
+  text: string;
+  /** 解析出的特征增量（可追溯"特征是怎么来的"） */
+  delta: {
+    energyHint?: string;
+    moodTags: string[];
+    vocalDensity?: string;
+    matched: string[];
+  };
+  parsedBy: "rules" | "llm";
+  changes: string[];
+  createdAt: string;
+}
+
 /**
  * 本地 JSON 存储：local-first 的持久化层。
  *
@@ -24,6 +41,8 @@ export interface DataStore {
   /** 持久化标记（首次运行导入示例库等一次性动作） */
   loadFlag(name: string): Promise<boolean>;
   saveFlag(name: string): Promise<void>;
+  loadLearnEvents(): Promise<LearnEvent[]>;
+  appendLearnEvent(event: LearnEvent): Promise<void>;
 }
 
 export class JsonFileStore implements DataStore {
@@ -109,6 +128,17 @@ export class JsonFileStore implements DataStore {
   async saveFlag(name: string): Promise<void> {
     await this.writeJson(`flag-${name}.json`, { value: true });
   }
+
+  async loadLearnEvents(): Promise<LearnEvent[]> {
+    const data = await this.readJson<{ events: LearnEvent[] }>("learnEvents.json", { events: [] });
+    return data.events;
+  }
+
+  async appendLearnEvent(event: LearnEvent): Promise<void> {
+    const data = await this.readJson<{ events: LearnEvent[] }>("learnEvents.json", { events: [] });
+    data.events.push(event);
+    await this.writeJson("learnEvents.json", data);
+  }
 }
 
 /** 纯内存实现：测试与临时运行使用 */
@@ -146,5 +176,12 @@ export class MemoryStore implements DataStore {
   }
   async saveFlag(name: string): Promise<void> {
     this.flags.add(name);
+  }
+  learnEvents: LearnEvent[] = [];
+  async loadLearnEvents(): Promise<LearnEvent[]> {
+    return this.learnEvents;
+  }
+  async appendLearnEvent(event: LearnEvent): Promise<void> {
+    this.learnEvents.push(event);
   }
 }

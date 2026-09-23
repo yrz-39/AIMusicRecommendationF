@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deriveTargetProfile, recommend, trackEnergy } from "../src/core/recommend/engine.js";
+import { buildPlaylist } from "../src/core/recommend/playlist.js";
 import { computeAffinity } from "../src/core/personalization/affinity.js";
 import type { StudyContext, Track } from "../src/core/types.js";
 import { parseContext } from "../src/core/parser/rulesParser.js";
@@ -81,6 +82,57 @@ describe("trackEnergy", () => {
   });
   it("完全未知时中性 0.5", () => {
     expect(trackEnergy(track({ id: "z", title: "z", artist: "z" }))).toBe(0.5);
+  });
+});
+
+describe("buildPlaylist", () => {
+  function manyTracks(): Track[] {
+    return Array.from({ length: 30 }, (_, i) =>
+      track({
+        id: `p${i}`,
+        title: `Song ${i}`,
+        artist: i < 15 ? "ArtistA" : "ArtistB",
+        genres: ["lofi"],
+        isInstrumental: true,
+        vocalDensity: "none",
+        moodTags: ["calm", "focus"],
+        energy: 0.3,
+        durationSec: 200,
+      }),
+    );
+  }
+
+  it("按时长预算组装歌单并尊重同歌手上限", () => {
+    const recs = recommend({
+      tracks: manyTracks(),
+      context: ctx("想听安静的纯音乐"),
+      feedbackEvents: [],
+      limit: 30,
+    });
+    const playlist = buildPlaylist(recs, 15);
+    // 15 分钟 = 900s，900/200 ≈ 4-5 首（受同歌手 2 首上限影响，A/B 各 2 = 4 首）
+    expect(playlist.totalSec).toBeGreaterThanOrEqual(720);
+    expect(playlist.totalSec).toBeLessThanOrEqual(990);
+    const counts = new Map<string, number>();
+    for (const t of playlist.tracks) counts.set(t.track.artist, (counts.get(t.track.artist) ?? 0) + 1);
+    for (const c of counts.values()) expect(c).toBeLessThanOrEqual(2);
+  });
+
+  it("预算不足时报告缺口", () => {
+    const recs = recommend({
+      tracks: [calmInstrumental],
+      context: ctx("想听安静的"),
+      feedbackEvents: [],
+      limit: 5,
+    });
+    const playlist = buildPlaylist(recs, 30);
+    expect(playlist.shortfallSec).toBeGreaterThan(0);
+  });
+
+  it("预算边界：默认 30 分钟且上限 240 分钟", () => {
+    const recs = recommend({ tracks: manyTracks(), context: ctx("想听安静的"), feedbackEvents: [], limit: 30 });
+    expect(buildPlaylist(recs).budgetMin).toBe(30);
+    expect(buildPlaylist(recs, 999).budgetMin).toBe(240);
   });
 });
 

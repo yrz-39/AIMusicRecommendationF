@@ -2,6 +2,9 @@ import { Hono } from "hono";
 import type { DataStore } from "../storage/jsonStore.js";
 import { parseContext } from "../core/parser/rulesParser.js";
 import { recommend } from "../core/recommend/engine.js";
+import { buildPlaylist } from "../core/recommend/playlist.js";
+import { parseSongFeedback, applyFeatureDelta } from "../core/learn/featureLearner.js";
+import { detectNowPlaying } from "../core/native/nowPlaying.js";
 import { validateImportRows } from "../core/import/validate.js";
 import { importCsv } from "../core/import/csv.js";
 import { getSampleLibrary } from "../sample/sampleLibrary.js";
@@ -125,6 +128,102 @@ export function createApp({ store, now = () => new Date() }: AppDeps): Hono {
       await store.saveTracks([...(await store.loadTracks()), ...result.accepted]);
     }
     return c.json({ imported: result.accepted.length, rejected: result.rejected });
+  });
+
+  app.get("/api/now-playing", async (c) => c.json(await detectNowPlaying()));
+
+  app.post("/api/playlist", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体必须是 JSON" }, 400);
+    }
+    const { input, sessionId } = (body ?? {}) as { input?: unknown; sessionId?: unknown };
+    if (typeof input !== "string" || input.trim().length === 0) {
+      return c.json({ error: "请描述你现在的状态" }, 400);
+    }
+
+    const context = parseContext(input).context;
+    const tracks = await store.loadTracks();
+    if (tracks.length === 0) {
+      return c.json({ error: "音乐库为空，请先在「音乐库」导入数据" }, 400);
+    }
+    const sid = typeof sessionId === "string" && sessionId ? sessionId : randomUUID();
+    const feedback = await store.loadFeedback();
+    const sessions = await store.loadSessions();
+    const recentTrackIds = sessions
+      .filter((s) => s.id !== sid)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 2)
+      .flatMap((s) => s.trackIds);
+    const rejected = new Set(
+      feedback.filter((f) => f.sessionId === sid && f.type === "not_suitable").map((f) => f.trackId),
+    );
+
+    const ranked = recommend({
+      tracks,
+      context,
+      feedbackEvents: feedback,
+      recentTrackIds,
+      excludeTrackIds: [...rejected],
+      limit: 60,
+      now: now(),
+    });
+    const playlist = buildPlaylist(ranked, context.durationMinutes);
+
+    const session: RecommendationSession = {
+      id: sid,
+      createdAt: now().toISOString(),
+      context,
+      trackIds: playlist.tracks.map((r) => r.track.id),
+    };
+    await store.upsertSession(session);
+
+    return c.json({ sessionId: sid, context, playlist });
+  });
+
+  app.post("/api/tracks/:id/learn", async (c) => {
+    const trackId = c.req.param("id");
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体必须是 JSON" }, 400);
+    }
+    const text = (body as { text?: unknown } | null)?.text;
+    if (typeof text !== "string" || text.trim() === "") {
+      return c.json({ error: "请描述这首歌给你的感受" }, 400);
+    }
+
+    const tracks = await store.loadTracks();
+    const track = tracks.find((t) => t.id === trackId);
+    if (track === undefined) return c.json({ error: "曲目不存在" }, 404);
+
+    const delta = parseSongFeedback(text);
+    if (!delta.understood) {
+      return c.json(
+        { error: "没理解你的描述。可以试试：『有力气、提高精力』『很安静、能静心』『没有歌词』这类说法" },
+        422,
+      );
+    }
+    const { track: updated, changes } = applyFeatureDelta(track, delta);
+    await store.saveTracks(tracks.map((t) => (t.id === trackId ? updated : t)));
+    await store.appendLearnEvent({
+      id: randomUUID(),
+      trackId,
+      text: text.trim(),
+      delta: {
+        energyHint: delta.energyHint,
+        moodTags: delta.moodTags,
+        vocalDensity: delta.vocalDensity,
+        matched: delta.matched,
+      },
+      parsedBy: "rules",
+      changes,
+      createdAt: now().toISOString(),
+    });
+    return c.json({ track: updated, changes, matched: delta.matched });
   });
 
   app.post("/api/recommend", async (c) => {

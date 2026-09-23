@@ -13,6 +13,17 @@ interface RecommendResponse {
   recommendations: Recommendation[];
 }
 
+interface PlaylistResponse {
+  sessionId: string;
+  context: StudyContext;
+  playlist: {
+    tracks: Recommendation[];
+    totalSec: number;
+    budgetMin: number;
+    shortfallSec: number;
+  };
+}
+
 const EXAMPLES = [
   "今晚准备写代码两个小时，有点累，而且容易走神。想听安静一点、歌词少一点的音乐。",
   "明天要考试，压力很大很焦虑，复习一小时，来点能静下心的",
@@ -29,6 +40,7 @@ export default function App(): React.ReactElement {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RecommendResponse | null>(null);
+  const [playlist, setPlaylist] = useState<PlaylistResponse | null>(null);
   const [libraryCount, setLibraryCount] = useState<number | null>(null);
   const [feedbackByTrack, setFeedbackByTrack] = useState<Record<string, FeedbackType>>({});
 
@@ -68,6 +80,7 @@ export default function App(): React.ReactElement {
         const data = (await res.json()) as RecommendResponse & { error?: string };
         if (!res.ok) throw new Error(data.error ?? "推荐失败");
         setResult(data);
+        setPlaylist(null);
         setFeedbackByTrack({});
       } catch (err) {
         setError((err as Error).message);
@@ -77,6 +90,32 @@ export default function App(): React.ReactElement {
     },
     [input, result?.sessionId],
   );
+
+  const requestPlaylist = useCallback(async (): Promise<void> => {
+    const text = input.trim();
+    if (!text) {
+      setError("先描述一下你现在的状态吧");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/playlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: text, sessionId: result?.sessionId }),
+      });
+      const data = (await res.json()) as PlaylistResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "歌单生成失败");
+      setPlaylist(data);
+      setResult(null);
+      setFeedbackByTrack({});
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [input, result?.sessionId]);
 
   const sendFeedback = useCallback(
     async (trackId: string, type: FeedbackType): Promise<void> => {
@@ -150,12 +189,41 @@ export default function App(): React.ReactElement {
                 </button>
               ))}
             </div>
-            <button className="primary-btn" disabled={loading} onClick={() => void requestRecommend()}>
-              {loading ? "正在理解你的状态…" : "获取推荐（Ctrl+Enter）"}
-            </button>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="primary-btn" style={{ flex: 1 }} disabled={loading} onClick={() => void requestRecommend()}>
+                {loading ? "正在理解你的状态…" : "获取推荐（Ctrl+Enter）"}
+              </button>
+              <button className="ghost-btn" style={{ marginTop: 14, padding: "0 18px" }} disabled={loading} onClick={() => void requestPlaylist()}>
+                🎵 生成歌单
+              </button>
+            </div>
           </section>
 
           {error !== null && <div className="error-box">{error}</div>}
+
+          {playlist !== null && (
+            <>
+              <ContextPanel context={playlist.context} />
+              <div className="result-header">
+                <h2>
+                  学习歌单 · {playlist.playlist.tracks.length} 首 · 约 {Math.round(playlist.playlist.totalSec / 60)} 分钟
+                  <span style={{ color: "var(--text-faint)", fontSize: 12, fontWeight: 400 }}>（目标 {playlist.playlist.budgetMin} 分钟）</span>
+                </h2>
+              </div>
+              {playlist.playlist.tracks.map((rec, i) => (
+                <TrackCard
+                  key={rec.track.id}
+                  rec={rec}
+                  rank={i + 1}
+                  feedback={feedbackByTrack[rec.track.id]}
+                  onFeedback={sendFeedback}
+                />
+              ))}
+              {playlist.playlist.shortfallSec > 60 && (
+                <div className="empty">曲库里符合条件的歌不够填满 {playlist.playlist.budgetMin} 分钟，先去多导入一些吧。</div>
+              )}
+            </>
+          )}
 
           {result !== null && (
             <ContextPanel context={result.context} />
