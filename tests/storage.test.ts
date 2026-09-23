@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -50,7 +50,8 @@ describe("JsonFileStore", () => {
     const store = await makeStore();
     await store.saveTracks([sampleTrack]);
     const dir = dirs[dirs.length - 1];
-    const files = await import("node:fs/promises").then((fs) => fs.readdir(dir));
+    if (dir === undefined) throw new Error("no temp dir");
+    const files = await readdir(dir);
     expect(files.some((f) => f.endsWith(".tmp"))).toBe(false);
   });
 

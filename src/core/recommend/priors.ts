@@ -1,4 +1,4 @@
-import type { Level, StudyContext } from "../types.js";
+import type { Level } from "../types.js";
 
 /**
  * 可解释的经验先验表。

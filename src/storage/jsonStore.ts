@@ -19,6 +19,11 @@ export interface DataStore {
   appendFeedback(event: FeedbackEvent): Promise<void>;
   loadSessions(): Promise<RecommendationSession[]>;
   appendSession(session: RecommendationSession): Promise<void>;
+  /** 同一会话再次推荐时更新其曲目列表（按 id upsert） */
+  upsertSession(session: RecommendationSession): Promise<void>;
+  /** 持久化标记（首次运行导入示例库等一次性动作） */
+  loadFlag(name: string): Promise<boolean>;
+  saveFlag(name: string): Promise<void>;
 }
 
 export class JsonFileStore implements DataStore {
@@ -87,6 +92,23 @@ export class JsonFileStore implements DataStore {
     const trimmed = data.sessions.slice(-200);
     await this.writeJson("sessions.json", { sessions: trimmed });
   }
+
+  async upsertSession(session: RecommendationSession): Promise<void> {
+    const data = await this.readJson<{ sessions: RecommendationSession[] }>("sessions.json", { sessions: [] });
+    const index = data.sessions.findIndex((s) => s.id === session.id);
+    if (index >= 0) data.sessions[index] = session;
+    else data.sessions.push(session);
+    const trimmed = data.sessions.slice(-200);
+    await this.writeJson("sessions.json", { sessions: trimmed });
+  }
+
+  async loadFlag(name: string): Promise<boolean> {
+    return this.readJson<{ value: boolean }>(`flag-${name}.json`, { value: false }).then((d) => d.value === true);
+  }
+
+  async saveFlag(name: string): Promise<void> {
+    await this.writeJson(`flag-${name}.json`, { value: true });
+  }
 }
 
 /** 纯内存实现：测试与临时运行使用 */
@@ -112,5 +134,17 @@ export class MemoryStore implements DataStore {
   }
   async appendSession(session: RecommendationSession): Promise<void> {
     this.sessions.push(session);
+  }
+  async upsertSession(session: RecommendationSession): Promise<void> {
+    const index = this.sessions.findIndex((s) => s.id === session.id);
+    if (index >= 0) this.sessions[index] = session;
+    else this.sessions.push(session);
+  }
+  flags = new Set<string>();
+  async loadFlag(name: string): Promise<boolean> {
+    return this.flags.has(name);
+  }
+  async saveFlag(name: string): Promise<void> {
+    this.flags.add(name);
   }
 }

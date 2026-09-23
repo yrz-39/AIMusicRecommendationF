@@ -8,7 +8,6 @@ import type {
 import {
   CONTEXT_MOOD_TO_DESIRED,
   GENRE_ENERGY_PRIOR,
-  LEVEL_VALUE,
   MOOD_DIRECTION,
   type TargetProfile,
 } from "./priors.js";

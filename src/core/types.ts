@@ -113,6 +113,8 @@ export interface Recommendation {
   /** 0..100 综合分 */
   score: number;
   components: ScoreComponent[];
+  /** 由各分项真实计算结果生成的人话推荐理由 */
+  reasons: string[];
 }
 
 export interface RecommendationSession {
