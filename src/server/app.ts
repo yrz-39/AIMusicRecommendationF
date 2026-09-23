@@ -49,6 +49,44 @@ export function createApp({ store, now = () => new Date() }: AppDeps): Hono {
 
   app.get("/api/health", (c) => c.json({ ok: true, time: now().toISOString() }));
 
+  app.get("/api/history", async (c) => {
+    const [sessions, feedback, tracks] = await Promise.all([
+      store.loadSessions(),
+      store.loadFeedback(),
+      store.loadTracks(),
+    ]);
+    const trackById = new Map(tracks.map((t) => [t.id, t] as const));
+    // 每个曲目在该会话内的最新反馈
+    const feedbackBySessionTrack = new Map<string, Map<string, FeedbackType>>();
+    for (const event of feedback) {
+      if (event.sessionId === undefined) continue;
+      const perTrack = feedbackBySessionTrack.get(event.sessionId) ?? new Map<string, FeedbackType>();
+      perTrack.set(event.trackId, event.type);
+      feedbackBySessionTrack.set(event.sessionId, perTrack);
+    }
+    const recent = [...sessions]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 10)
+      .map((s) => {
+        const perTrack = feedbackBySessionTrack.get(s.id);
+        return {
+          id: s.id,
+          createdAt: s.createdAt,
+          context: s.context,
+          tracks: s.trackIds
+            .map((id) => trackById.get(id))
+            .filter((t): t is NonNullable<typeof t> => t !== undefined)
+            .map((t) => ({ track: t, feedback: perTrack?.get(t.id) })),
+        };
+      });
+    const stats = {
+      likes: feedback.filter((f) => f.type === "like").length,
+      skips: feedback.filter((f) => f.type === "skip").length,
+      rejected: feedback.filter((f) => f.type === "not_suitable").length,
+    };
+    return c.json({ sessions: recent, stats });
+  });
+
   app.get("/api/library", async (c) => {
     const tracks = await store.loadTracks();
     return c.json({ count: tracks.length, tracks });

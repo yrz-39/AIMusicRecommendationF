@@ -3,6 +3,7 @@ import type { Recommendation, StudyContext } from "../core/types.js";
 import { ContextPanel } from "./components/ContextPanel.js";
 import { TrackCard } from "./components/TrackCard.js";
 import { LibraryView } from "./components/LibraryView.js";
+import { HistoryView } from "./components/HistoryView.js";
 
 export type FeedbackType = "like" | "skip" | "not_suitable";
 
@@ -23,7 +24,7 @@ const EXAMPLES = [
 const ENERGY_ZH: Record<string, string> = { low: "低", medium: "中", high: "高" };
 
 export default function App(): React.ReactElement {
-  const [tab, setTab] = useState<"recommend" | "library">("recommend");
+  const [tab, setTab] = useState<"recommend" | "library" | "history">("recommend");
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -124,6 +125,9 @@ export default function App(): React.ReactElement {
         <button className={tab === "library" ? "tab active" : "tab"} onClick={() => setTab("library")}>
           音乐库
         </button>
+        <button className={tab === "history" ? "tab active" : "tab"} onClick={() => setTab("history")}>
+          历史
+        </button>
       </nav>
 
       {tab === "recommend" ? (
@@ -184,8 +188,10 @@ export default function App(): React.ReactElement {
             </div>
           )}
         </>
-      ) : (
+      ) : tab === "library" ? (
         <LibraryView onChanged={refreshLibraryCount} />
+      ) : (
+        <HistoryView />
       )}
 
       <footer className="footer">

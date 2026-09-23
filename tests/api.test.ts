@@ -140,6 +140,33 @@ describe("API", () => {
     expect((await store.loadTracks()).length).toBe(before + 1);
   });
 
+  it("历史接口返回会话与反馈统计", async () => {
+    const { app } = await makeSeededApp();
+    const rec = await app.request("/api/recommend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: "复习，随便什么歌" }),
+    });
+    const data = (await json(rec)) as { sessionId: string; recommendations: Array<{ track: { id: string } }> };
+    await app.request("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId: data.recommendations[0]!.track.id, type: "like", sessionId: data.sessionId }),
+    });
+
+    const res = await app.request("/api/history");
+    expect(res.status).toBe(200);
+    const history = (await json(res)) as {
+      sessions: Array<{ id: string; tracks: Array<{ track: { id: string }; feedback?: string }> }>;
+      stats: { likes: number; skips: number; rejected: number };
+    };
+    expect(history.sessions.length).toBeGreaterThan(0);
+    const session = history.sessions.find((s) => s.id === data.sessionId);
+    expect(session).toBeDefined();
+    expect(session?.tracks[0]?.feedback).toBe("like");
+    expect(history.stats.likes).toBe(1);
+  });
+
   it("反馈不存在的曲目返回 404", async () => {
     const { app } = await makeSeededApp();
     const res = await app.request("/api/feedback", {
