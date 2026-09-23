@@ -26,6 +26,7 @@ StudyMood DJ 是一个本地优先的学习场景音乐推荐工具。
 * `ROADMAP.md`：产品里程碑与当前进度
 * `AGENTS.md`：自主 Agent 工程规则
 * `DECISIONS.md`：重要技术和产品决策
+* `docs/REPORT-2026-09-23.md`：首日开发全记录（架构/算法细节/验证日志）
 
 ## 技术栈
 
