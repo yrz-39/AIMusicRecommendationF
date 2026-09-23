@@ -121,6 +121,25 @@ describe("API", () => {
     expect((await store.loadTracks()).length).toBe(before + 1);
   });
 
+  it("CSV 导入：中英表头入库，坏行被拒", async () => {
+    const { app, store } = await makeSeededApp();
+    const before = (await store.loadTracks()).length;
+    const csv = [
+      "title,artist,duration,genres",
+      '"Song, A",某人,3:30,"pop, rock"',
+      "Bad Row",
+    ].join("\n");
+    const res = await app.request("/api/library/import-csv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await json(res)) as { imported: number };
+    expect(data.imported).toBe(1);
+    expect((await store.loadTracks()).length).toBe(before + 1);
+  });
+
   it("反馈不存在的曲目返回 404", async () => {
     const { app } = await makeSeededApp();
     const res = await app.request("/api/feedback", {

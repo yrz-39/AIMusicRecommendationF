@@ -389,7 +389,20 @@ export function recommend(input: RecommendInput): Recommendation[] {
   // 简单多样性：同一歌手最多出现 2 首
   const perArtist = new Map<string, number>();
   const results: Recommendation[] = [];
-  for (const item of scored) {
+  // 同分时的二级排序信号：学习场景下 2.5-7 分钟的曲目更实用
+  const durationTieBreak = (track: Track): number => {
+    const d = track.durationSec;
+    if (d >= 150 && d <= 420) return 1;
+    if (d < 150) return d / 150;
+    return Math.max(0, 1 - (d - 420) / 600);
+  };
+  const sortedForSelection = [...scored].sort(
+    (a, b) =>
+      b.score - a.score ||
+      durationTieBreak(b.track) - durationTieBreak(a.track) ||
+      a.track.title.localeCompare(b.track.title),
+  );
+  for (const item of sortedForSelection) {
     const count = perArtist.get(item.track.artist) ?? 0;
     if (count >= 2) continue;
     perArtist.set(item.track.artist, count + 1);

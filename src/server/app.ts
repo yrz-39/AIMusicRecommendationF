@@ -3,6 +3,7 @@ import type { DataStore } from "../storage/jsonStore.js";
 import { parseContext } from "../core/parser/rulesParser.js";
 import { recommend } from "../core/recommend/engine.js";
 import { validateImportRows } from "../core/import/validate.js";
+import { importCsv } from "../core/import/csv.js";
 import { getSampleLibrary } from "../sample/sampleLibrary.js";
 import type { FeedbackEvent, FeedbackType, RecommendationSession } from "../core/types.js";
 import { randomUUID } from "node:crypto";
@@ -63,6 +64,25 @@ export function createApp({ store, now = () => new Date() }: AppDeps): Hono {
     const rows = (body as { tracks?: unknown } | null)?.tracks ?? body;
     const existing = new Set((await store.loadTracks()).map((t) => t.id));
     const result = validateImportRows(rows, { existingIds: existing });
+    if (result.accepted.length > 0) {
+      await store.saveTracks([...(await store.loadTracks()), ...result.accepted]);
+    }
+    return c.json({ imported: result.accepted.length, rejected: result.rejected });
+  });
+
+  app.post("/api/library/import-csv", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体必须是 JSON" }, 400);
+    }
+    const csv = (body as { csv?: unknown } | null)?.csv;
+    if (typeof csv !== "string" || csv.trim() === "") {
+      return c.json({ error: "缺少 csv 文本" }, 400);
+    }
+    const existing = new Set((await store.loadTracks()).map((t) => t.id));
+    const result = importCsv(csv, { existingIds: existing });
     if (result.accepted.length > 0) {
       await store.saveTracks([...(await store.loadTracks()), ...result.accepted]);
     }

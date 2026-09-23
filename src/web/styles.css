@@ -452,6 +452,17 @@ textarea#status-input::placeholder {
   opacity: 0.9;
 }
 
+a.fb-btn {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+a.fb-btn:hover {
+  color: var(--accent);
+  border-color: rgba(240, 180, 92, 0.45);
+}
+
 .fb-btn.liked {
   color: var(--green);
   border-color: rgba(125, 207, 154, 0.5);

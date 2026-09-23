@@ -1,12 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Track } from "../../core/types.js";
 import { energyLabel, formatDuration } from "../App.js";
+
+type ImportFormat = "json" | "csv";
+
+const CSV_TEMPLATE =
+  "歌名,歌手,专辑,时长,风格,能量,情绪,语言,纯音乐\n" +
+  "晴天,周杰伦,叶惠美,4:29,pop,0.5,温暖,中文,0\n" +
+  "Aruarian Dance,Nujabes,4:23,lofi,0.3,平静专注,纯音乐,1";
 
 export function LibraryView({ onChanged }: { onChanged: () => void }): React.ReactElement {
   const [tracks, setTracks] = useState<Track[] | null>(null);
   const [filter, setFilter] = useState("");
+  const [format, setFormat] = useState<ImportFormat>("csv");
   const [importText, setImportText] = useState("");
   const [importMsg, setImportMsg] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -25,25 +34,42 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
   const doImport = useCallback(async (): Promise<void> => {
     setImportMsg(null);
     try {
-      const parsed: unknown = JSON.parse(importText);
-      const res = await fetch("/api/library/import", {
+      const endpoint = format === "csv" ? "/api/library/import-csv" : "/api/library/import";
+      const payload =
+        format === "csv"
+          ? { csv: importText }
+          : { tracks: JSON.parse(importText) as unknown };
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tracks: parsed }),
+        body: JSON.stringify(payload),
       });
-      const data = (await res.json()) as { imported: number; rejected: Array<{ row: number; reason: string }>; error?: string };
+      const data = (await res.json()) as {
+        imported: number;
+        rejected: Array<{ row: number; reason: string }>;
+        error?: string;
+      };
       if (!res.ok) throw new Error(data.error ?? "导入失败");
       setImportMsg(
         `导入 ${data.imported} 首` +
-          (data.rejected.length > 0 ? `，失败 ${data.rejected.length} 行（首行: ${data.rejected[0]?.reason}）` : ""),
+          (data.rejected.length > 0
+            ? `，失败 ${data.rejected.length} 行（首行: ${data.rejected[0]?.reason}）`
+            : ""),
       );
-      setImportText("");
+      if (data.imported > 0) setImportText("");
       await load();
       onChanged();
     } catch (err) {
       setImportMsg(`导入失败：${(err as Error).message}`);
     }
-  }, [importText, load, onChanged]);
+  }, [format, importText, load, onChanged]);
+
+  const onPickFile = useCallback(async (file: File): Promise<void> => {
+    const text = await file.text();
+    setImportText(text);
+    setFormat(file.name.toLowerCase().endsWith(".json") ? "json" : "csv");
+    setImportMsg(`已读取 ${file.name}，检查后点「导入」`);
+  }, []);
 
   const q = filter.trim().toLowerCase();
   const filtered = (tracks ?? []).filter(
@@ -53,16 +79,47 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
   return (
     <>
       <section className="input-card">
-        <label>导入音乐（JSON 数组，字段：title / artist / durationSec 或 "mm:ss" / genres / energy / moodTags / language / isInstrumental）</label>
+        <label>导入你的音乐</label>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+          <button className={format === "csv" ? "tab active" : "tab"} onClick={() => setFormat("csv")}>
+            CSV
+          </button>
+          <button className={format === "json" ? "tab active" : "tab"} onClick={() => setFormat("json")}>
+            JSON
+          </button>
+          <button className="ghost-btn" style={{ padding: "5px 12px" }} onClick={() => fileInputRef.current?.click()}>
+            选择文件…
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.txt,.json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void onPickFile(file);
+              e.target.value = "";
+            }}
+          />
+        </div>
         <textarea
           id="status-input"
           style={{ minHeight: 70 }}
           value={importText}
           onChange={(e) => setImportText(e.target.value)}
-          placeholder={'[{"title":"晴天","artist":"周杰伦","durationSec":269,"genres":["pop"],"energy":0.5,"vocalDensity":"high"}]'}
+          placeholder={
+            format === "csv"
+              ? "粘贴 CSV（表头支持中英文：歌名,歌手,专辑,时长,风格,能量,情绪,语言,纯音乐）\n" + CSV_TEMPLATE
+              : '[{"title":"晴天","artist":"周杰伦","durationSec":269,"genres":["pop"],"energy":0.5,"vocalDensity":"high"}]'
+          }
         />
         <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center" }}>
-          <button className="primary-btn" style={{ marginTop: 0, width: "auto", padding: "9px 22px" }} disabled={importText.trim() === ""} onClick={() => void doImport()}>
+          <button
+            className="primary-btn"
+            style={{ marginTop: 0, width: "auto", padding: "9px 22px" }}
+            disabled={importText.trim() === ""}
+            onClick={() => void doImport()}
+          >
             导入
           </button>
           {importMsg !== null && <span style={{ fontSize: 13, color: "var(--text-dim)" }}>{importMsg}</span>}
@@ -114,8 +171,8 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
       )}
 
       <p className="lib-note">
-        当前为内置示例库（{tracks?.length ?? 0} 首）。以后接入你自己的音乐库（本地文件 / CSV / 网易云）后，这里会显示你的全部歌曲；
-        所有数据只保存在本机 data/ 目录，不会上传。
+        CSV 表头：歌名/歌手/专辑/时长(如 4:29)/风格/能量(0-1)/情绪/语言/纯音乐(0或1)，列名顺序不限、缺列可省。
+        数据只保存在本机 data/ 目录，不会上传。
       </p>
     </>
   );

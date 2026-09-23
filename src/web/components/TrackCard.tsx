@@ -1,6 +1,12 @@
+import { useState } from "react";
 import type { FeedbackType } from "../App.js";
 import { energyLabel, formatDuration } from "../App.js";
 import type { Recommendation } from "../../core/types.js";
+
+function neteaseSearchUrl(track: Recommendation["track"]): string {
+  const keyword = track.netease?.searchKeyword ?? `${track.title} ${track.artist}`;
+  return `https://music.163.com/#/search/m/?s=${encodeURIComponent(keyword)}`;
+}
 
 export function TrackCard(props: {
   rec: Recommendation;
@@ -10,6 +16,17 @@ export function TrackCard(props: {
 }): React.ReactElement {
   const { rec, rank, feedback, onFeedback } = props;
   const { track, score, reasons } = rec;
+  const [copied, setCopied] = useState(false);
+
+  const copySong = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(`${track.title} ${track.artist}`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // 剪贴板不可用时静默
+    }
+  };
 
   return (
     <article className="track-card">
@@ -70,6 +87,13 @@ export function TrackCard(props: {
           ✕ 不适合
         </button>
         {feedback !== undefined && <span className="fb-hint">已记录，下次推荐会参考</span>}
+        <span style={{ flex: 1 }} />
+        <button className="fb-btn" onClick={() => void copySong()}>
+          {copied ? "✓ 已复制" : "⧉ 复制"}
+        </button>
+        <a className="fb-btn netease-link" href={neteaseSearchUrl(track)} target="_blank" rel="noreferrer">
+          ▶ 网易云
+        </a>
       </div>
     </article>
   );

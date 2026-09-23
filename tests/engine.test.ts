@@ -195,6 +195,36 @@ describe("recommend", () => {
     expect(recs.length).toBe(2);
   });
 
+  it("同分时长甜区(2.5-7分钟)优先于过短曲目", () => {
+    // 两首契合度完全相同的纯音乐，仅时长不同
+    const short = track({
+      id: "short",
+      title: "AAA Tiny Jingle",
+      artist: "S",
+      genres: ["lofi"],
+      isInstrumental: true,
+      vocalDensity: "none",
+      moodTags: ["calm", "focus"],
+      energy: 0.3,
+      durationSec: 45,
+    });
+    const sweet = track({
+      id: "sweet",
+      title: "BBB Study Loop",
+      artist: "S2",
+      genres: ["lofi"],
+      isInstrumental: true,
+      vocalDensity: "none",
+      moodTags: ["calm", "focus"],
+      energy: 0.3,
+      durationSec: 240,
+    });
+    const recs = recommend({ tracks: [short, sweet], context: ctx("想听安静的纯音乐"), feedbackEvents: [] });
+    expect(recs[0]?.track.id).toBe("sweet");
+    // 分数相同（二级信号决定顺序）
+    expect(recs[0]?.score).toBe(recs[1]?.score);
+  });
+
   it("空曲库返回空结果", () => {
     expect(recommend({ tracks: [], context: ctx("写代码"), feedbackEvents: [] })).toEqual([]);
   });
