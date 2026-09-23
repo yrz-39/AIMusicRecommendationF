@@ -1,0 +1,31 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+build/
+out/
+
+# 环境与凭据（绝不提交）
+.env
+.env.*
+!.env.example
+
+# 用户本地数据（音乐库、反馈、偏好，一律不入库）
+data/
+*.local.json
+*.sqlite
+*.db
+
+# 日志
+logs/
+*.log
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 测试覆盖率
+coverage/
