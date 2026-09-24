@@ -1,10 +1,39 @@
 import { app, BrowserWindow, ipcMain, Menu } from "electron";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
+import os from "node:os";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { createApp, seedSampleIfFirstRun } from "../src/server/app.js";
 import { JsonFileStore } from "../src/storage/jsonStore.js";
+
+/**
+ * 主进程崩溃/生命周期日志：写入系统日志目录（本地优先，无遥测，日志留在本机）。
+ * 打包版主进程 stdout 不可见，这是排障的唯一线索来源。
+ */
+function logFile(): string {
+  try {
+    return path.join(app.getPath("logs"), "main.log");
+  } catch {
+    // app ready 之前 getPath("logs") 可能不可用
+    return path.join(os.tmpdir(), "studymood-main.log");
+  }
+}
+
+function log(msg: string): void {
+  try {
+    const file = logFile();
+    const { mkdirSync } = require("node:fs") as typeof import("node:fs");
+    mkdirSync(path.dirname(file), { recursive: true });
+    appendFileSync(file, `${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    /* ignore */
+  }
+}
+
+log("--- main.cjs loading ---");
+process.on("uncaughtException", (err) => log(`uncaught: ${err.stack ?? err.message}`));
+process.on("unhandledRejection", (err) => log(`unhandled: ${String(err)}`));
 
 /**
  * StudyMood DJ 桌面壳。
@@ -37,13 +66,17 @@ function pickPort(preferred: number): Promise<number> {
 }
 
 async function startApi(): Promise<number> {
+  log("startApi begin");
+  // 打包模式下把工作目录切到 resources/，serveStatic 的相对路径才能落在 web/ 上
+  if (app.isPackaged) process.chdir(process.resourcesPath);
   const dataDir = app.isPackaged
     ? path.join(app.getPath("userData"), "data")
     : path.resolve("data");
+  log(`dataDir=${dataDir}`);
   const store = new JsonFileStore(dataDir);
   await store.init();
   if (await seedSampleIfFirstRun(store)) {
-    console.log("[studymood] 首次运行：已导入示例音乐库");
+    log("首次运行：已导入示例音乐库");
   }
   const appHono = createApp({ store });
 
@@ -58,12 +91,16 @@ async function startApi(): Promise<number> {
   }
 
   const port = await pickPort(8787);
+  log(`picked port ${port}`);
   await new Promise<void>((resolve, reject) => {
     const server = serve({ fetch: appHono.fetch, port, hostname: "127.0.0.1" }, () => {
-      console.log(`[studymood] API: http://127.0.0.1:${port}  数据: ${dataDir}`);
+      log(`API listening on ${port}`);
       resolve();
     });
-    server.on("error", reject);
+    server.on("error", (err) => {
+      log(`serve error: ${String(err)}`);
+      reject(err);
+    });
   });
   return port;
 }
@@ -109,6 +146,7 @@ function createWindow(port: number): void {
 }
 
 const gotLock = app.requestSingleInstanceLock();
+log(`singleInstanceLock=${gotLock} isPackaged=${app.isPackaged} userData=${app.getPath("userData")}`);
 if (!gotLock) {
   app.quit();
 } else {

@@ -12,6 +12,8 @@
     "start": "tsx src/server/main.ts",
     "build": "vite build",
     "build:electron": "esbuild electron/main.ts electron/preload.ts --bundle --platform=node --external:electron --outdir=dist-electron --out-extension:.js=.cjs",
+    "icon": "node scripts/genIcon.mjs",
+    "dist": "npm run build && npm run build:electron && electron-builder --win",
     "app": "npm run build && npm run build:electron && electron .",
     "app:fast": "electron .",
     "test": "vitest run",
@@ -31,7 +33,9 @@
     "@vitejs/plugin-react": "^4.5.0",
     "concurrently": "^9.1.0",
     "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
+    "png-to-ico": "^3.0.2",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
     "vite": "^6.3.0",
@@ -41,5 +45,34 @@
     "electron@44.4.5": true,
     "esbuild@0.28.2": true,
     "esbuild@0.25.12": true
+  },
+  "build": {
+    "appId": "com.studymood.dj",
+    "productName": "StudyMood DJ",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist-electron/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/web",
+        "to": "web"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "StudyMood DJ"
+    }
   }
 }

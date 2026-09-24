@@ -32,3 +32,6 @@ coverage/
 
 # Electron 构建产物
 dist-electron/
+
+# 打包输出
+release/
