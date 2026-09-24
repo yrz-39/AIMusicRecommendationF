@@ -626,3 +626,49 @@ a.fb-btn:hover {
   33% { content: "…"; }
   66% { content: "……"; }
 }
+
+/* ---------- 桌面小窗模式（Electron，body.mini-mode） ---------- */
+body.mini-mode #root {
+  max-width: none;
+  padding: 14px 12px 40px;
+}
+
+body.mini-mode .header {
+  margin-bottom: 12px;
+}
+
+body.mini-mode .brand h1 {
+  font-size: 18px;
+}
+
+body.mini-mode .brand .tagline,
+body.mini-mode .examples,
+body.mini-mode .footer {
+  display: none;
+}
+
+body.mini-mode textarea#status-input {
+  min-height: 58px;
+  font-size: 14px;
+}
+
+body.mini-mode .track-card {
+  padding: 12px 14px;
+}
+
+body.mini-mode .reasons {
+  margin-left: 40px;
+  padding: 8px 12px;
+}
+
+body.mini-mode .feedback-row {
+  margin-left: 40px;
+}
+
+body.mini-mode .track-title {
+  font-size: 14px;
+}
+
+body.mini-mode .score-box {
+  width: 74px;
+}

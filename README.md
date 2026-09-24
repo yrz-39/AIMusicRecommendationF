@@ -37,6 +37,17 @@ StudyMood DJ 是一个本地优先的学习场景音乐推荐工具。
 * **前端**（`src/web`）：React + Vite，深色主题单页
 * **测试**：Vitest（解析器 / 引擎 / 存储 / API 集成）
 
+## 桌面应用（Electron）
+
+```bash
+npm run app        # 构建 + 启动桌面应用（主窗口 + 可切换桌面小窗）
+npm run app:fast   # 跳过构建直接启动（已有构建产物时）
+```
+
+- 主窗口 1000×800，右上角「⊞ 小窗」一键切换为 **380×640 桌面置顶小窗**（伴随音乐软件使用），再点「⧉ 主页面」切回；
+- Electron 主进程内嵌与 Web 版完全相同的 API 与数据目录（开发期共用 `data/`）；
+- 单实例锁：重复启动会聚焦已有窗口；端口被占自动顺延（8788+）。
+
 ## 开发与运行
 
 要求：Node.js ≥ 20。
@@ -52,7 +63,7 @@ npm run typecheck  # TypeScript 类型检查
 npm run build      # 构建前端到 dist/web
 ```
 
-生产模式启动：`npm run build && npm start`，然后打开 http://127.0.0.1:8787/。
+浏览器模式启动：`npm run build && npm start`，然后打开 http://127.0.0.1:8787/。
 
 ## 首次运行
 

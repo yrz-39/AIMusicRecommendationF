@@ -1,0 +1,142 @@
+import { app, BrowserWindow, ipcMain, Menu } from "electron";
+import path from "node:path";
+import { existsSync } from "node:fs";
+import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { createApp, seedSampleIfFirstRun } from "../src/server/app.js";
+import { JsonFileStore } from "../src/storage/jsonStore.js";
+
+/**
+ * StudyMood DJ 桌面壳。
+ *
+ * 架构：Electron 主进程内启动与 Web 版完全相同的 Hono API（复用 createApp），
+ * BrowserWindow 直接加载 http://127.0.0.1:<port>/，渲染层零改动、主题一致。
+ * 数据目录：开发期沿用项目 data/；打包后用系统 userData 目录。
+ * 小窗模式：单窗口在 主页面(1000x800) ↔ 桌面小窗(380x640, 置顶) 间切换。
+ */
+
+const MAIN_SIZE = { width: 1000, height: 800 };
+const MINI_SIZE = { width: 380, height: 640 };
+
+let mainWindow: BrowserWindow | null = null;
+
+function pickPort(preferred: number): Promise<number> {
+  const { createServer } = require("node:net") as typeof import("node:net");
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", () => {
+      // 首选端口被占（例如用户开着 npm start），顺延尝试
+      if (preferred < 8795) resolve(pickPort(preferred + 1));
+      else reject(new Error("no free port"));
+    });
+    probe.once("listening", () => {
+      probe.close(() => resolve(preferred));
+    });
+    probe.listen(preferred, "127.0.0.1");
+  });
+}
+
+async function startApi(): Promise<number> {
+  const dataDir = app.isPackaged
+    ? path.join(app.getPath("userData"), "data")
+    : path.resolve("data");
+  const store = new JsonFileStore(dataDir);
+  await store.init();
+  if (await seedSampleIfFirstRun(store)) {
+    console.log("[studymood] 首次运行：已导入示例音乐库");
+  }
+  const appHono = createApp({ store });
+
+  // 与 server/main.ts 相同的静态托管（生产构建产物）
+  const webDist = app.isPackaged
+    ? path.join(process.resourcesPath ?? "", "web")
+    : path.resolve("dist/web");
+  if (existsSync(webDist)) {
+    const root = path.relative(process.cwd(), webDist);
+    appHono.use("*", serveStatic({ root }));
+    appHono.get("*", serveStatic({ root, path: "/index.html" }));
+  }
+
+  const port = await pickPort(8787);
+  await new Promise<void>((resolve, reject) => {
+    const server = serve({ fetch: appHono.fetch, port, hostname: "127.0.0.1" }, () => {
+      console.log(`[studymood] API: http://127.0.0.1:${port}  数据: ${dataDir}`);
+      resolve();
+    });
+    server.on("error", reject);
+  });
+  return port;
+}
+
+function applyMode(win: BrowserWindow, mini: boolean): void {
+  if (mini) {
+    win.setMinimumSize(340, 520);
+    win.setBounds(MINI_SIZE);
+    win.setAlwaysOnTop(true, "screen-saver");
+  } else {
+    win.setAlwaysOnTop(false);
+    win.setMinimumSize(720, 560);
+    win.setBounds(MAIN_SIZE);
+  }
+}
+
+function createWindow(port: number): void {
+  mainWindow = new BrowserWindow({
+    ...MAIN_SIZE,
+    minWidth: 720,
+    minHeight: 560,
+    backgroundColor: "#fdf3f4",
+    autoHideMenuBar: true,
+    title: "StudyMood DJ",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  void mainWindow.loadURL(`http://127.0.0.1:${port}/`);
+
+  // 无菜单栏；保留 F12 开发者工具
+  mainWindow.webContents.on("before-input-event", (_e, input) => {
+    if (input.type === "keyDown" && input.key === "F12") {
+      mainWindow?.webContents.toggleDevTools();
+    }
+  });
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow !== null) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+
+  Menu.setApplicationMenu(null);
+
+  void app.whenReady().then(async () => {
+    ipcMain.handle("window:set-mini-mode", (_event, mini: boolean) => {
+      if (mainWindow !== null) applyMode(mainWindow, mini === true);
+      return true;
+    });
+
+    try {
+      const port = await startApi();
+      createWindow(port);
+    } catch (err) {
+      console.error("[studymood] 启动失败:", err);
+      app.quit();
+    }
+  });
+
+  app.on("window-all-closed", () => {
+    app.quit();
+  });
+}

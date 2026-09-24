@@ -4,6 +4,7 @@ import { ContextPanel } from "./components/ContextPanel.js";
 import { TrackCard } from "./components/TrackCard.js";
 import { LibraryView } from "./components/LibraryView.js";
 import { HistoryView } from "./components/HistoryView.js";
+import { isDesktopApp } from "./electronBridge.js";
 
 export type FeedbackType = "like" | "skip" | "not_suitable";
 
@@ -43,6 +44,16 @@ export default function App(): React.ReactElement {
   const [playlist, setPlaylist] = useState<PlaylistResponse | null>(null);
   const [libraryCount, setLibraryCount] = useState<number | null>(null);
   const [feedbackByTrack, setFeedbackByTrack] = useState<Record<string, FeedbackType>>({});
+  const [miniMode, setMiniMode] = useState(false);
+  const desktop = isDesktopApp();
+
+  const toggleMiniMode = useCallback((): void => {
+    if (!desktop) return;
+    const next = !miniMode;
+    setMiniMode(next);
+    document.body.classList.toggle("mini-mode", next);
+    void window.electronAPI?.setMiniMode(next);
+  }, [desktop, miniMode]);
 
   const refreshLibraryCount = useCallback(async (): Promise<void> => {
     try {
@@ -147,6 +158,12 @@ export default function App(): React.ReactElement {
           <span className="tagline">描述你的学习状态，从自己的音乐库里找到现在最合适的歌</span>
         </div>
         <div className="lib-count">
+          {desktop && (
+            <a onClick={toggleMiniMode} title={miniMode ? "切回主页面" : "切换到桌面小窗"}>
+              {miniMode ? "⧉ 主页面" : "⊞ 小窗"}
+            </a>
+          )}
+          {"  "}
           <a
             onClick={() => {
               setTab(tab === "library" ? "recommend" : "library");
