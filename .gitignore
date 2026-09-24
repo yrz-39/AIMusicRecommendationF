@@ -29,3 +29,6 @@ Thumbs.db
 
 # 测试覆盖率
 coverage/
+
+# Electron 构建产物
+dist-electron/
