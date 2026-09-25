@@ -4,11 +4,16 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createApp, seedSampleIfFirstRun } from "./app.js";
 import { JsonFileStore } from "../storage/jsonStore.js";
+import { loadDotEnv, readLlmConfig } from "../config/env.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const DATA_DIR = process.env.STUDYMOOD_DATA_DIR ?? path.resolve("data");
 const WEB_DIST = path.resolve("dist/web");
 const APP_VERSION = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version?: string }).version;
+
+loadDotEnv([path.resolve(".env")]);
+const LLM = readLlmConfig();
+if (LLM !== null) console.log(`LLM 解析已启用: ${LLM.baseUrl} / ${LLM.model}`);
 
 async function main(): Promise<void> {
   const store = new JsonFileStore(DATA_DIR);
@@ -17,7 +22,7 @@ async function main(): Promise<void> {
     console.log("首次运行：已导入示例音乐库（导入真实库后会整体替换）");
   }
 
-  const app = createApp({ store, appVersion: APP_VERSION, dataDir: DATA_DIR });
+  const app = createApp({ store, appVersion: APP_VERSION, dataDir: DATA_DIR, llm: LLM });
 
   // 生产模式：存在构建产物时由 API 进程直接托管前端
   if (existsSync(WEB_DIST)) {

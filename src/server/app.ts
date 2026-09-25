@@ -1,15 +1,16 @@
 import { Hono } from "hono";
 import type { DataStore } from "../storage/jsonStore.js";
-import { parseContext } from "../core/parser/rulesParser.js";
 import { recommend } from "../core/recommend/engine.js";
-import { buildPlaylist } from "../core/recommend/playlist.js";
 import { contextFromTrack, matchPlayingTrack } from "../core/recommend/contextFromTrack.js";
-import { parseSongFeedback, applyFeatureDelta } from "../core/learn/featureLearner.js";
+import { parseContextAuto, parseSongFeedbackAuto } from "../core/llm/auto.js";
+import { buildPlaylist } from "../core/recommend/playlist.js";
+import { applyFeatureDelta } from "../core/learn/featureLearner.js";
 import { detectNowPlaying } from "../core/native/nowPlaying.js";
 import { validateImportRows } from "../core/import/validate.js";
 import { importCsv } from "../core/import/csv.js";
 import { getSampleLibrary } from "../sample/sampleLibrary.js";
 import type { FeedbackEvent, FeedbackType, Recommendation, RecommendationSession, StudyContext } from "../core/types.js";
+import type { LlmConfig } from "../config/env.js";
 import { randomUUID } from "node:crypto";
 
 /**
@@ -31,6 +32,8 @@ export interface AppDeps {
   appVersion?: string;
   /** 数据目录绝对路径（帮助页展示，方便用户备份/迁移） */
   dataDir?: string;
+  /** LLM 配置（.env 注入）；null = 未配置，全部走规则解析 */
+  llm?: LlmConfig | null;
 }
 
 /** 首次运行且曲库为空时导入示例库（通过持久化 flag 保证只执行一次） */
@@ -47,7 +50,7 @@ export async function seedSampleIfFirstRun(store: DataStore): Promise<boolean> {
   return true;
 }
 
-export function createApp({ store, now = () => new Date(), appVersion, dataDir }: AppDeps): Hono {
+export function createApp({ store, now = () => new Date(), appVersion, dataDir, llm = null }: AppDeps): Hono {
   const app = new Hono();
 
   app.onError((err, c) => {
@@ -204,12 +207,12 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir }
       return c.json({ error: "请描述你现在的状态" }, 400);
     }
 
-    const context = parseContext(input).context;
+    const { context, parsedBy } = await parseContextAuto(input, llm);
     const outcome = await runRecommend(context, { sessionId, limit: 60 });
     if ("error" in outcome) return c.json({ error: outcome.error }, 400);
     const playlist = buildPlaylist(outcome.recommendations, context.durationMinutes);
 
-    return c.json({ sessionId: outcome.sessionId, context, playlist });
+    return c.json({ sessionId: outcome.sessionId, context, parsedBy, playlist });
   });
 
   app.post("/api/tracks/:id/learn", async (c) => {
@@ -229,7 +232,7 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir }
     const track = tracks.find((t) => t.id === trackId);
     if (track === undefined) return c.json({ error: "曲目不存在" }, 404);
 
-    const delta = parseSongFeedback(text);
+    const { delta, parsedBy } = await parseSongFeedbackAuto(text, llm);
     if (!delta.understood) {
       return c.json(
         { error: "没理解你的描述。可以试试：『有力气、提高精力』『很安静、能静心』『没有歌词』这类说法" },
@@ -248,11 +251,11 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir }
         vocalDensity: delta.vocalDensity,
         matched: delta.matched,
       },
-      parsedBy: "rules",
+      parsedBy,
       changes,
       createdAt: now().toISOString(),
     });
-    return c.json({ track: updated, changes, matched: delta.matched });
+    return c.json({ track: updated, changes, matched: delta.matched, parsedBy });
   });
 
   app.post("/api/recommend", async (c) => {
@@ -274,11 +277,11 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir }
       return c.json({ error: "描述太长了（上限 2000 字）" }, 400);
     }
 
-    const context = parseContext(input).context;
+    const { context, parsedBy } = await parseContextAuto(input, llm);
     const outcome = await runRecommend(context, { sessionId, excludeTrackIds, limit: 10 });
     if ("error" in outcome) return c.json({ error: outcome.error }, 400);
 
-    return c.json({ sessionId: outcome.sessionId, context, recommendations: outcome.recommendations });
+    return c.json({ sessionId: outcome.sessionId, context, parsedBy, recommendations: outcome.recommendations });
   });
 
   /** 正在播放 + 曲库匹配：检测到播放中的歌后，找到库内对应曲目（找不到则 track 为 null） */

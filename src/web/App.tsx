@@ -15,12 +15,14 @@ interface RecommendResponse {
   sessionId: string;
   context: StudyContext;
   recommendations: Recommendation[];
+  parsedBy?: "llm" | "rules";
 }
 
 interface SimilarResponse {
   sessionId: string;
   context: StudyContext;
   recommendations: Recommendation[];
+  parsedBy?: "llm" | "rules";
   basedOn: Recommendation["track"];
 }
 
@@ -369,6 +371,7 @@ export default function App(): React.ReactElement {
           <span>
             {" "}
             · 解析置信度 {(result.context.parserMeta.confidence * 100).toFixed(0)}%
+            {result.parsedBy === "llm" && " · 🤖 LLM 理解"}
             {result.context.parserMeta.unknowns.length > 0 &&
               ` · 未提及: ${result.context.parserMeta.unknowns.join("、")}`}
           </span>
