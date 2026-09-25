@@ -80,7 +80,16 @@ npm run build      # 构建前端到 dist/web
 
 ## 数据与隐私
 
-所有用户数据（曲库 / 反馈 / 会话）保存在本地 `data/` 目录，已被 `.gitignore` 排除，不会进入版本库。当前版本不向任何外部服务发送数据。
+所有用户数据（曲库 / 反馈 / 会话）保存在本地，已被 `.gitignore` 排除，不会进入版本库。当前版本不向任何外部服务发送数据。
+
+**两个数据目录（互不互通）：**
+
+| 运行方式 | 数据位置 |
+|---|---|
+| 开发 / 浏览器模式（`npm start`、`npm run app`） | 项目 `data/` 目录 |
+| 安装版（StudyMood DJ Setup 安装的） | `%APPDATA%\studymood-dj\data` |
+
+主进程日志：安装版在 `%APPDATA%\studymood-dj\logs\main.log`。数据迁移/互通在后续版本解决。
 
 ## 当前状态
 
