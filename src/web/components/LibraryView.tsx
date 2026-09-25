@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { parseBlob } from "music-metadata";
 import type { Track } from "../../core/types.js";
+import { assembleTrack, type AudioTags } from "../../core/import/audio.js";
 import { energyLabel, formatDuration } from "../App.js";
 
-type ImportFormat = "json" | "csv";
+type ImportFormat = "json" | "csv" | "audio";
+
+interface ParsedAudio {
+  fileName: string;
+  track?: Track;
+  reason?: string;
+}
+
+const AUDIO_ACCEPT = ".mp3,.flac,.m4a,.aac,.ogg,.opus,.wav,audio/*";
 
 const CSV_TEMPLATE =
   "歌名,歌手,专辑,时长,风格,能量,情绪,语言,纯音乐\n" +
@@ -16,6 +26,9 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
   const [importText, setImportText] = useState("");
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+  const [audioParsed, setAudioParsed] = useState<ParsedAudio[] | null>(null);
+  const [audioBusy, setAudioBusy] = useState(false);
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -64,6 +77,68 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
     }
   }, [format, importText, load, onChanged]);
 
+  /** 浏览器本地解析音频标签（文件不离开本机），解析失败时用文件名兜底 */
+  const parseAudioFiles = useCallback(async (files: File[]): Promise<void> => {
+    setAudioBusy(true);
+    setAudioParsed(null);
+    const results: ParsedAudio[] = [];
+    for (const file of files) {
+      try {
+        // path 提示帮助解析器按扩展名选择格式（某些浏览器 File.type 为空）
+        const meta = await parseBlob(file, { duration: true, path: file.name });
+        const tags: AudioTags = {
+          title: meta.common.title,
+          artist: meta.common.artist,
+          album: meta.common.album,
+          durationSec: meta.format.duration,
+          genres: meta.common.genre,
+        };
+        results.push(assembleTrack(file.name, tags));
+      } catch (err) {
+        const fallback = assembleTrack(file.name, {});
+        const detail = (err as Error).message;
+        results.push({
+          fileName: file.name,
+          ...fallback,
+          ...(fallback.reason !== undefined ? { reason: `${fallback.reason}（解析器：${detail}）` } : {}),
+        });
+      }
+    }
+    setAudioBusy(false);
+    setAudioParsed(results);
+  }, []);
+
+  const importAudio = useCallback(async (): Promise<void> => {
+    const tracks = (audioParsed ?? []).map((p) => p.track).filter((t): t is Track => t !== undefined);
+    if (tracks.length === 0) return;
+    setImportMsg(null);
+    setAudioBusy(true);
+    try {
+      const res = await fetch("/api/library/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tracks }),
+      });
+      const data = (await res.json()) as {
+        imported: number;
+        rejected: Array<{ row: number; reason: string }>;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error ?? "导入失败");
+      setImportMsg(
+        `导入 ${data.imported} 首` +
+          (data.rejected.length > 0 ? `，${data.rejected.length} 首与现有曲目重复已跳过` : ""),
+      );
+      setAudioParsed(null);
+      await load();
+      onChanged();
+    } catch (err) {
+      setImportMsg(`导入失败：${(err as Error).message}`);
+    } finally {
+      setAudioBusy(false);
+    }
+  }, [audioParsed, load, onChanged]);
+
   const onPickFile = useCallback(async (file: File): Promise<void> => {
     const text = await file.text();
     setImportText(text);
@@ -106,28 +181,113 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
       <section className="input-card">
         <label>导入你的音乐</label>
         <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+          <button className={format === "audio" ? "tab active" : "tab"} onClick={() => setFormat("audio")}>
+            音频文件
+          </button>
           <button className={format === "csv" ? "tab active" : "tab"} onClick={() => setFormat("csv")}>
             CSV
           </button>
           <button className={format === "json" ? "tab active" : "tab"} onClick={() => setFormat("json")}>
             JSON
           </button>
-          <button className="ghost-btn" style={{ padding: "5px 12px" }} onClick={() => fileInputRef.current?.click()}>
-            选择文件…
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,.txt,.json"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void onPickFile(file);
-              e.target.value = "";
-            }}
-          />
+          {format !== "audio" && (
+            <>
+              <button className="ghost-btn" style={{ padding: "5px 12px" }} onClick={() => fileInputRef.current?.click()}>
+                选择文件…
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.txt,.json"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void onPickFile(file);
+                  e.target.value = "";
+                }}
+              />
+            </>
+          )}
         </div>
-        <textarea
+
+        {format === "audio" ? (
+          <div className="audio-import">
+            <p className="audio-hint">
+              选择你电脑里的音乐文件（支持多选，mp3 / flac / m4a / ogg…），歌名、歌手、时长会自动从文件标签读取；
+              标签缺失时按「歌手 - 歌名」文件名推断。<strong>解析和导入都在本机完成，文件不会上传。</strong>
+            </p>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <button
+                className="primary-btn"
+                style={{ marginTop: 0, width: "auto", padding: "9px 22px" }}
+                disabled={audioBusy}
+                onClick={() => audioInputRef.current?.click()}
+              >
+                {audioBusy ? "正在解析…" : "选择音频文件…"}
+              </button>
+              {audioParsed !== null && !audioBusy && (
+                <span style={{ fontSize: 13, color: "var(--text-dim)" }}>
+                  解析出 {audioParsed.filter((p) => p.track !== undefined).length} 首
+                  {audioParsed.some((p) => p.reason !== undefined) &&
+                    `，${audioParsed.filter((p) => p.reason !== undefined).length} 个失败`}
+                </span>
+              )}
+              <input
+                ref={audioInputRef}
+                type="file"
+                accept={AUDIO_ACCEPT}
+                multiple
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  if (files.length > 0) void parseAudioFiles(files);
+                  e.target.value = "";
+                }}
+              />
+            </div>
+            {audioParsed !== null && !audioBusy && (
+              <>
+                <table className="lib-table" style={{ marginTop: 10 }}>
+                  <thead>
+                    <tr>
+                      <th>文件</th>
+                      <th>识别结果</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {audioParsed.map((p) => (
+                      <tr key={p.fileName}>
+                        <td className="title" style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {p.fileName}
+                        </td>
+                        <td style={{ color: p.track === undefined ? "var(--red)" : "var(--text-dim)" }}>
+                          {p.track !== undefined
+                            ? `${p.track.title} · ${p.track.artist} · ${formatDuration(p.track.durationSec)}`
+                            : `无法导入：${p.reason}`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                  <button
+                    className="primary-btn"
+                    style={{ marginTop: 0, width: "auto", padding: "8px 20px" }}
+                    disabled={audioBusy || audioParsed.every((p) => p.track === undefined)}
+                    onClick={() => void importAudio()}
+                  >
+                    导入
+                  </button>
+                  <button className="ghost-btn" onClick={() => setAudioParsed(null)}>
+                    取消
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <>
+            <textarea
           id="status-input"
           style={{ minHeight: 70 }}
           value={importText}
@@ -149,6 +309,8 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
           </button>
           {importMsg !== null && <span style={{ fontSize: 13, color: "var(--text-dim)" }}>{importMsg}</span>}
         </div>
+          </>
+        )}
       </section>
 
       {learnTrackId !== null && learnTrack !== undefined && (
