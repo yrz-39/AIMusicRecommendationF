@@ -9,7 +9,7 @@ import { prelabelTracks } from "../core/llm/prelabel.js";
 import { normalizeGenres } from "../core/import/genreMap.js";
 import { fetchNeteasePlaylist } from "../core/import/netease.js";
 import { detectNowPlaying } from "../core/native/nowPlaying.js";
-import { validateImportRows } from "../core/import/validate.js";
+import { validateImportRows, songKey } from "../core/import/validate.js";
 import { importCsv } from "../core/import/csv.js";
 import { getSampleLibrary } from "../sample/sampleLibrary.js";
 import type { FeedbackEvent, FeedbackType, Recommendation, RecommendationSession, StudyContext } from "../core/types.js";
@@ -252,12 +252,14 @@ export function createApp({
       return c.json({ error: "请求体必须是 JSON" }, 400);
     }
     const rows = (body as { tracks?: unknown } | null)?.tracks ?? body;
-    const existing = new Set((await store.loadTracks()).map((t) => t.id));
-    const result = validateImportRows(rows, { existingIds: existing });
+    const existing = await store.loadTracks();
+    const existingIds = new Set(existing.map((t) => t.id));
+    const existingKeys = new Set(existing.map((t) => songKey(t.title, t.artist)));
+    const result = validateImportRows(rows, { existingIds, existingSongKeys: existingKeys });
     if (result.accepted.length > 0) {
-      await store.saveTracks([...(await store.loadTracks()), ...result.accepted]);
+      await store.saveTracks([...existing, ...result.accepted]);
     }
-    return c.json({ imported: result.accepted.length, rejected: result.rejected });
+    return c.json({ imported: result.accepted.length, rejected: result.rejected, ids: result.accepted.map((t) => t.id) });
   });
 
   app.post("/api/library/import-csv", async (c) => {
@@ -271,12 +273,14 @@ export function createApp({
     if (typeof csv !== "string" || csv.trim() === "") {
       return c.json({ error: "缺少 csv 文本" }, 400);
     }
-    const existing = new Set((await store.loadTracks()).map((t) => t.id));
-    const result = importCsv(csv, { existingIds: existing });
+    const existing = await store.loadTracks();
+    const existingIds = new Set(existing.map((t) => t.id));
+    const existingKeys = new Set(existing.map((t) => songKey(t.title, t.artist)));
+    const result = importCsv(csv, { existingIds, existingSongKeys: existingKeys });
     if (result.accepted.length > 0) {
-      await store.saveTracks([...(await store.loadTracks()), ...result.accepted]);
+      await store.saveTracks([...existing, ...result.accepted]);
     }
-    return c.json({ imported: result.accepted.length, rejected: result.rejected });
+    return c.json({ imported: result.accepted.length, rejected: result.rejected, ids: result.accepted.map((t) => t.id) });
   });
 
   app.get("/api/now-playing", async (c) => c.json(await detectNowPlaying()));

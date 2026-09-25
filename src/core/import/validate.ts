@@ -13,7 +13,14 @@ export interface ImportResult {
 export interface ImportOptions {
   /** 已存在的曲目 id，用于去重（重复 id 的行会被拒绝） */
   existingIds?: Set<string>;
+  /** 已存在曲目的「歌名|歌手」规范化 key：跨来源识别同一首歌（网易云条目与本地条目 id 必然不同） */
+  existingSongKeys?: Set<string>;
   source?: Track["source"];
+}
+
+/** 歌曲身份 key：跨来源去重用（大小写不敏感、忽略全部空白——「周 杰 伦」与「周杰伦」视为同一歌手） */
+export function songKey(title: string, artist: string): string {
+  return `${title.trim().toLowerCase().replace(/\s+/g, "")}|${artist.trim().toLowerCase().replace(/\s+/g, "")}`;
 }
 
 export function validateImportRows(rows: unknown, options: ImportOptions = {}): ImportResult {
@@ -23,7 +30,9 @@ export function validateImportRows(rows: unknown, options: ImportOptions = {}): 
     return result;
   }
   const existing = options.existingIds ?? new Set<string>();
+  const existingKeys = options.existingSongKeys ?? new Set<string>();
   const seen = new Set<string>();
+  const seenKeys = new Set<string>();
 
   rows.forEach((row, index) => {
     try {
@@ -39,9 +48,15 @@ export function validateImportRows(rows: unknown, options: ImportOptions = {}): 
         throw new Error("时长 durationSec 无效");
       }
 
+      const key = songKey(title, artist);
+      if (seenKeys.has(key) || existingKeys.has(key)) {
+        throw new Error(`与曲库已有曲目重复: ${title} - ${artist}`);
+      }
+
       const id = str(r.id) || slugify(`${title}-${artist}`);
       if (seen.has(id) || existing.has(id)) throw new Error(`id 重复: ${id}`);
       seen.add(id);
+      seenKeys.add(key);
 
       const energyRaw = num(r.energy);
       const track: Track = {
