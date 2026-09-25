@@ -211,16 +211,19 @@ describe("LLM 批量预标注", () => {
 });
 
 describe("网易云歌单导入", () => {
-  const playlistJson = JSON.stringify({
-    result: {
-      name: "我的学习歌单",
-      trackCount: 2,
-      tracks: [
-        { id: 111, name: "晴天", duration: 269000, artists: [{ name: "周杰伦" }], album: { name: "叶惠美" } },
-        { id: 222, name: "Numb", duration: 187000, artists: [{ name: "Linkin Park" }] },
-      ],
-    },
+  const v3Json = JSON.stringify({
+    playlist: { name: "我的学习歌单", trackCount: 2, trackIds: [{ id: 111 }, { id: 222 }], tracks: [{ id: 111 }] },
   });
+  const songDetailJson = JSON.stringify({
+    songs: [
+      { id: 111, name: "晴天", duration: 269000, artists: [{ name: "周杰伦" }], album: { name: "叶惠美" } },
+      { id: 222, name: "Numb", duration: 187000, artists: [{ name: "Linkin Park" }] },
+    ],
+  });
+  const mockNetease = (async (url: RequestInfo | URL) => {
+    const u = String(url);
+    return new Response(u.includes("/v3/") ? v3Json : u.includes("song/detail") ? songDetailJson : "{}", { status: 200 });
+  }) as typeof fetch;
 
   it("extractPlaylistId 支持长链、短链文本、纯 id", () => {
     expect(extractPlaylistId("https://music.163.com/playlist?id=3778678&userid=1")).toBe("3778678");
@@ -229,11 +232,8 @@ describe("网易云歌单导入", () => {
     expect(extractPlaylistId("随便说的话")).toBeNull();
   });
 
-  it("抓取并映射曲目（含合作歌手、时长秒换算）", async () => {
-    const mock = (async (url: RequestInfo | URL) => {
-      return new Response(String(url).includes("playlist/detail") ? playlistJson : '{"songs":[]}', { status: 200 });
-    }) as typeof fetch;
-    const playlist = await fetchNeteasePlaylist("https://music.163.com/playlist?id=42", { fetchImpl: mock });
+  it("抓取并映射曲目（v3 全量 id + song/detail 批量详情）", async () => {
+    const playlist = await fetchNeteasePlaylist("https://music.163.com/playlist?id=42", { fetchImpl: mockNetease });
     expect(playlist.name).toBe("我的学习歌单");
     expect(playlist.tracks).toHaveLength(2);
     expect(playlist.tracks[0]).toMatchObject({
@@ -248,9 +248,9 @@ describe("网易云歌单导入", () => {
 
   it("配置 cookie 时请求头带 MUSIC_U", async () => {
     let captured: string | undefined;
-    const mock = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const mock = (async (url: RequestInfo | URL, init?: RequestInit) => {
       captured = (init?.headers as Record<string, string>)?.Cookie;
-      return new Response(playlistJson, { status: 200 });
+      return new Response(String(url).includes("/v3/") ? v3Json : songDetailJson, { status: 200 });
     }) as typeof fetch;
     await fetchNeteasePlaylist("3778678", { cookie: "abc123", fetchImpl: mock });
     expect(captured).toBe("MUSIC_U=abc123");

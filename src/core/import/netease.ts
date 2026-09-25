@@ -68,7 +68,7 @@ async function getText(url: string, fetchImpl: typeof fetch, cookie?: string): P
   return res.text();
 }
 
-/** 抓取公开歌单 → 规范化曲目列表。短链会先跳转，从最终地址提取 id。 */
+/** 抓取歌单 → 规范化曲目列表。短链会先跳转，从最终地址提取 id。 */
 export async function fetchNeteasePlaylist(
   input: string,
   options: NeteaseFetchOptions = {},
@@ -88,62 +88,86 @@ export async function fetchNeteasePlaylist(
     throw new Error("无法识别歌单链接：请粘贴网易云歌单的分享链接或纯数字 id");
   }
 
-  const detail = JSON.parse(
-    await getText(`https://music.163.com/api/playlist/detail?id=${id}`, fetchImpl, cookie),
-  ) as {
-    result?: { name?: string; trackCount?: number; tracks?: NeteaseSong[]; trackIds?: Array<{ id?: number }> };
-  };
-  const result = detail.result;
-  if (result === undefined) throw new Error("歌单不存在或未公开（私密歌单需要配置登录 Cookie）");
+  // 主路径：v3 接口的 trackIds 匿名即返回全量（实测；v1 的 tracks 匿名会被截到前 10 首）。
+  // 拿到全量 id 后按批走 song/detail 取完整元数据（v1 格式：artists/duration）。
+  let name = "网易云歌单";
+  let allIds: number[] = [];
+  try {
+    const v3 = JSON.parse(
+      await getText(`https://music.163.com/api/v3/playlist/detail?id=${id}&n=1000`, fetchImpl, cookie),
+    ) as {
+      playlist?: {
+        name?: string;
+        trackCount?: number;
+        trackIds?: Array<{ id?: number }>;
+        tracks?: NeteaseSong[];
+      };
+    };
+    const playlist = v3.playlist;
+    if (playlist !== undefined) {
+      if (playlist.name?.trim() !== "") name = playlist.name?.trim() ?? name;
+      allIds = (playlist.trackIds ?? [])
+        .map((x) => x.id)
+        .filter((x): x is number => typeof x === "number");
+    }
+  } catch {
+    /* v3 失败时回退 v1 */
+  }
 
-  const name = result.name?.trim() || "网易云歌单";
-  const songs: NeteaseSong[] = result.tracks ?? [];
-  const total = result.trackCount ?? songs.length;
+  // 回退：v1 detail（官方歌单 tracks 全量；用户歌单匿名只给 10 首 + 无 trackIds）
+  let songs: NeteaseSong[] = [];
+  if (allIds.length === 0) {
+    const v1 = JSON.parse(
+      await getText(`https://music.163.com/api/playlist/detail?id=${id}`, fetchImpl, cookie),
+    ) as {
+      result?: { name?: string; trackCount?: number; tracks?: NeteaseSong[]; trackIds?: Array<{ id?: number }> };
+    };
+    if (v1.result === undefined) throw new Error("歌单不存在或未公开（私密歌单需要配置登录 Cookie）");
+    if (v1.result.name?.trim() !== "") name = v1.result.name?.trim() ?? name;
+    songs = v1.result.tracks ?? [];
+    if (Array.isArray(v1.result.trackIds) && v1.result.trackIds.length > 0) {
+      allIds = v1.result.trackIds.map((x) => x.id).filter((x): x is number => typeof x === "number");
+    }
+  }
+
+  // song/detail 批量取详情（每批 50）。若 v1 已返回全量结构完整的详情则直接使用。
   const tracks: Track[] = [];
   const seen = new Set<string>();
-  for (const song of songs) {
+  const push = (song: NeteaseSong): void => {
     const t = songToTrack(song);
     if (t !== null && !seen.has(t.id)) {
       seen.add(t.id);
       tracks.push(t);
     }
-  }
-
-  // 个别歌单 tracks 不全（只回部分详情 + trackIds 全量）：补齐缺失部分
-  if (tracks.length < total && Array.isArray(result.trackIds) && result.trackIds.length > 0) {
-    const have = new Set(tracks.map((t) => t.id));
-    const missingIds = result.trackIds
-      .map((x) => x.id)
-      .filter((x): x is number => typeof x === "number" && !have.has(`ne-${x}`));
-    for (let i = 0; i < missingIds.length; i += 50) {
-      const batch = missingIds.slice(i, i + 50);
+  };
+  const v1Complete = songs.length > 0 && songs.every((s) => typeof s.duration === "number" && (s.artists?.length ?? 0) > 0);
+  if (v1Complete && (allIds.length === 0 || songs.length >= allIds.length)) {
+    for (const song of songs) push(song);
+  } else {
+    const ids = allIds.length > 0 ? allIds : songs.map((s) => s.id).filter((x): x is number => typeof x === "number");
+    for (let i = 0; i < ids.length; i += 50) {
+      const batch = ids.slice(i, i + 50);
       try {
-        const detailText = await getText(
-          `https://music.163.com/api/song/detail/?id=${batch[0]}&ids=${encodeURIComponent(JSON.stringify(batch))}`,
-          fetchImpl,
-          cookie,
-        );
-        const parsed = JSON.parse(detailText) as { songs?: NeteaseSong[] };
-        for (const song of parsed.songs ?? []) {
-          const t = songToTrack(song);
-          if (t !== null && !seen.has(t.id)) {
-            seen.add(t.id);
-            tracks.push(t);
-          }
-        }
+        const parsed = JSON.parse(
+          await getText(
+            `https://music.163.com/api/song/detail/?id=${batch[0]}&ids=${encodeURIComponent(JSON.stringify(batch))}`,
+            fetchImpl,
+            cookie,
+          ),
+        ) as { songs?: NeteaseSong[] };
+        for (const song of parsed.songs ?? []) push(song);
       } catch {
         /* 单批失败跳过，不让整单导入卡死 */
       }
     }
   }
 
-  // 未登录匿名访问用户歌单会被截断到前 10 首：明确提示而不是静默丢歌
-  if (cookie === undefined && tracks.length > 0 && tracks.length < total) {
+  if (tracks.length === 0) {
     throw new Error(
-      `未登录只能读取该歌单的前 ${tracks.length} 首（共 ${total} 首）。配置网易云登录 Cookie 后即可导入全部歌曲`,
+      allIds.length > 0
+        ? "歌单里的歌曲详情读取失败（网易云可能临时限流，稍后重试）"
+        : "歌单里没有可导入的歌曲",
     );
   }
-
-  if (tracks.length === 0) throw new Error("歌单里没有可导入的歌曲");
   return { id, name, tracks };
 }
