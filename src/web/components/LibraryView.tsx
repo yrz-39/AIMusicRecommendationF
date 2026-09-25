@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { parseBlob } from "music-metadata";
 import type { Track } from "../../core/types.js";
 import { assembleTrack, type AudioTags } from "../../core/import/audio.js";
+import { normalizeGenres } from "../../core/import/genreMap.js";
 import { energyLabel, formatDuration } from "../App.js";
 
 type ImportFormat = "json" | "csv" | "audio";
@@ -83,6 +84,74 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
     const missing = (tracks ?? []).filter((t) => t.energy === undefined).map((t) => t.id);
     void runPrelabel(missing);
   }, [tracks, runPrelabel]);
+
+  // ---------- 手动添加单曲 ----------
+  const [addOpen, setAddOpen] = useState(false);
+  const [addMsg, setAddMsg] = useState<string | null>(null);
+  const [addForm, setAddForm] = useState({ title: "", artist: "", album: "", duration: "", genres: "" });
+
+  const addTrack = useCallback(async (): Promise<void> => {
+    setAddMsg(null);
+    const title = addForm.title.trim();
+    const artist = addForm.artist.trim();
+    const durText = addForm.duration.trim();
+    if (title === "" || artist === "") {
+      setAddMsg("歌名和歌手是必填的");
+      return;
+    }
+    let durationSec: number | undefined;
+    const m = durText.match(/^(\d{1,3}):([0-5]\d)$/);
+    if (m !== null) durationSec = Number(m[1]) * 60 + Number(m[2]);
+    else if (/^\d{1,5}$/.test(durText)) durationSec = Number(durText);
+    if (durationSec === undefined || durationSec <= 0) {
+      setAddMsg("时长格式：mm:ss（如 4:29）或秒数");
+      return;
+    }
+    const track = {
+      id: `manual-${title.trim().toLowerCase().replace(/\s+/g, "-")}-${artist.trim().toLowerCase().replace(/\s+/g, "-")}`,
+      title: title.trim(),
+      artist: artist.trim(),
+      album: addForm.album.trim() || undefined,
+      durationSec,
+      genres: addForm.genres.trim() !== "" ? normalizeGenres(addForm.genres.split(/[,，、]/)) : undefined,
+      source: { kind: "manual" as const },
+    };
+    try {
+      const res = await fetch("/api/library/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tracks: [track] }),
+      });
+      const data = (await res.json()) as { imported: number; rejected: Array<{ reason: string }>; error?: string };
+      if (!res.ok) throw new Error(data.error ?? "添加失败");
+      if (data.imported === 0) throw new Error(`添加失败：${data.rejected[0]?.reason ?? "可能与现有曲目重复"}`);
+      setAddMsg(`已添加「${title}」`);
+      setAddForm({ title: "", artist: "", album: "", duration: "", genres: "" });
+      await load();
+      onChanged();
+      void runPrelabel([track.id]);
+    } catch (err) {
+      setAddMsg((err as Error).message);
+    }
+  }, [addForm, load, onChanged, runPrelabel]);
+
+  const deleteTrack = useCallback(
+    async (id: string, title: string): Promise<void> => {
+      if (!window.confirm(`确定从曲库删除「${title}」吗？（相关的教它记录会保留）`)) return;
+      try {
+        const res = await fetch(`/api/tracks/${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!res.ok) {
+          const data = (await res.json()) as { error?: string };
+          throw new Error(data.error ?? "删除失败");
+        }
+        await load();
+        onChanged();
+      } catch (err) {
+        setImportMsg(`删除失败：${(err as Error).message}`);
+      }
+    },
+    [load, onChanged],
+  );
 
   const doImport = useCallback(async (): Promise<void> => {
     setImportMsg(null);
@@ -414,10 +483,57 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
+        <button
+          className="ghost-btn"
+          style={{ padding: "5px 12px" }}
+          onClick={() => {
+            setAddOpen(!addOpen);
+            setAddMsg(null);
+          }}
+        >
+          {addOpen ? "收起" : "＋ 添加歌曲"}
+        </button>
         <span style={{ color: "var(--text-faint)", fontSize: 13 }}>
           {tracks === null ? "加载中" : `共 ${tracks.length} 首，显示 ${filtered.length} 首`}
         </span>
       </div>
+
+      {addOpen && (
+        <section className="input-card" style={{ padding: "16px 18px" }}>
+          <div className="add-grid">
+            <label>
+              歌名 *
+              <input value={addForm.title} onChange={(e) => setAddForm({ ...addForm, title: e.target.value })} placeholder="晴天" />
+            </label>
+            <label>
+              歌手 *
+              <input value={addForm.artist} onChange={(e) => setAddForm({ ...addForm, artist: e.target.value })} placeholder="周杰伦" />
+            </label>
+            <label>
+              专辑
+              <input value={addForm.album} onChange={(e) => setAddForm({ ...addForm, album: e.target.value })} placeholder="叶惠美" />
+            </label>
+            <label>
+              时长 *
+              <input value={addForm.duration} onChange={(e) => setAddForm({ ...addForm, duration: e.target.value })} placeholder="4:29" />
+            </label>
+            <label>
+              风格（逗号分隔）
+              <input value={addForm.genres} onChange={(e) => setAddForm({ ...addForm, genres: e.target.value })} placeholder="流行, 摇滚" />
+            </label>
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center" }}>
+            <button
+              className="primary-btn"
+              style={{ marginTop: 0, width: "auto", padding: "8px 20px" }}
+              onClick={() => void addTrack()}
+            >
+              添加到曲库
+            </button>
+            {addMsg !== null && <span style={{ fontSize: 13, color: "var(--text-dim)" }}>{addMsg}</span>}
+          </div>
+        </section>
+      )}
 
       {tracks !== null && (
         <table className="lib-table">
@@ -447,13 +563,22 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
                 </td>
                 <td>{formatDuration(t.durationSec)}</td>
                 <td>
-                  <button
-                    className="ghost-btn"
-                    style={{ padding: "3px 10px", fontSize: 12 }}
-                    onClick={() => { setLearnTrackId(t.id); setLearnMsg(null); setLearnText(""); }}
-                  >
-                    教它
-                  </button>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      className="ghost-btn"
+                      style={{ padding: "3px 10px", fontSize: 12 }}
+                      onClick={() => { setLearnTrackId(t.id); setLearnMsg(null); setLearnText(""); }}
+                    >
+                      教它
+                    </button>
+                    <button
+                      className="ghost-btn"
+                      style={{ padding: "3px 10px", fontSize: 12, color: "var(--red)" }}
+                      onClick={() => void deleteTrack(t.id, t.title)}
+                    >
+                      删除
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}

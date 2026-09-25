@@ -224,6 +224,16 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir, 
     return c.json({ count: tracks.length, tracks });
   });
 
+  /** 删除单曲：只从曲库移除条目；历史反馈/学习记录保留（引用自然失效，不参与计算） */
+  app.delete("/api/tracks/:id", async (c) => {
+    const id = c.req.param("id");
+    const tracks = await store.loadTracks();
+    const remaining = tracks.filter((t) => t.id !== id);
+    if (remaining.length === tracks.length) return c.json({ error: "曲目不存在" }, 404);
+    await store.saveTracks(remaining);
+    return c.json({ ok: true, removed: tracks.length - remaining.length });
+  });
+
   app.post("/api/library/import", async (c) => {
     let body: unknown;
     try {

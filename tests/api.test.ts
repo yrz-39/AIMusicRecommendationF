@@ -82,6 +82,18 @@ describe("API", () => {
     if (!data.playing) expect(data.track).toBeUndefined();
   });
 
+  it("删除单曲：从曲库移除，不存在时 404", async () => {
+    const { app, store } = await makeSeededApp();
+    const before = (await store.loadTracks()).length;
+    const res = await app.request("/api/tracks/ye-qu", { method: "DELETE" });
+    expect(res.status).toBe(200);
+    const after = (await store.loadTracks()).map((t) => t.id);
+    expect(after).not.toContain("ye-qu");
+    expect(after.length).toBe(before - 1);
+    const missing = await app.request("/api/tracks/ye-qu", { method: "DELETE" });
+    expect(missing.status).toBe(404);
+  });
+
   it("首次运行导入示例库且只执行一次", async () => {
     const store = new MemoryStore();
     expect(await seedSampleIfFirstRun(store)).toBe(true);
