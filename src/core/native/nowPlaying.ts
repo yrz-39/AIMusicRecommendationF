@@ -57,7 +57,10 @@ export function parseWindowTitle(raw: string): NowPlaying | null {
 
 function listWindowTitles(): Promise<string[]> {
   return new Promise((resolve) => {
+    // 中文 Windows 上 PowerShell 默认按 GBK 输出，Node 按 UTF-8 解码会全部乱码，
+    // 必须先显式切换输出流编码（实测缺失时永远检测不到窗口标题）。
     const script =
+      "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
       "Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | ForEach-Object { $_.MainWindowTitle }";
     execFile(
       "powershell.exe",

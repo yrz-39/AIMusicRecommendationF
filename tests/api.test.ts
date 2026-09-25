@@ -31,6 +31,57 @@ describe("API", () => {
     expect(data.dataDir).toBe("D:/somewhere/data");
   });
 
+  it("recommend-similar：基于曲目构造情境、排除自身、记录会话", async () => {
+    const { app, store } = await makeSeededApp();
+    const tracks = await store.loadTracks();
+    const base = tracks.find((t) => t.energy !== undefined && t.energy < 0.4);
+    if (base === undefined) throw new Error("示例库缺少安静曲目");
+    const res = await app.request("/api/recommend-similar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId: base.id }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await json(res)) as {
+      sessionId: string;
+      context: { musicPrefs?: { calmness?: string }; parserMeta: { matched: string[] } };
+      recommendations: Array<{ track: { id: string } }>;
+      basedOn: { id: string };
+    };
+    expect(data.basedOn.id).toBe(base.id);
+    expect(data.context.musicPrefs?.calmness).toBe("calm");
+    expect(data.context.parserMeta.matched[0]).toContain(base.title);
+    expect(data.recommendations.length).toBeGreaterThan(0);
+    expect(data.recommendations.some((r) => r.track.id === base.id)).toBe(false);
+    // 会话已记录（历史页可见）
+    expect((await store.loadSessions()).some((s) => s.id === data.sessionId)).toBe(true);
+  });
+
+  it("recommend-similar 参数错误与未知曲目", async () => {
+    const { app } = await makeSeededApp();
+    const missing = await app.request("/api/recommend-similar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(missing.status).toBe(400);
+    const unknown = await app.request("/api/recommend-similar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId: "no-such-id" }),
+    });
+    expect(unknown.status).toBe(404);
+  });
+
+  it("now-playing/current：无播放时优雅降级，不暴露 track", async () => {
+    const { app } = await makeSeededApp();
+    const res = await app.request("/api/now-playing/current");
+    expect(res.status).toBe(200);
+    const data = (await json(res)) as { playing: boolean; track?: unknown };
+    expect(typeof data.playing).toBe("boolean");
+    if (!data.playing) expect(data.track).toBeUndefined();
+  });
+
   it("首次运行导入示例库且只执行一次", async () => {
     const store = new MemoryStore();
     expect(await seedSampleIfFirstRun(store)).toBe(true);

@@ -6,6 +6,7 @@ import { LibraryView } from "./components/LibraryView.js";
 import { HistoryView } from "./components/HistoryView.js";
 import { Onboarding, hasOnboarded, markOnboarded } from "./components/Onboarding.js";
 import { HelpModal } from "./components/HelpModal.js";
+import { NowPlayingBar } from "./components/NowPlayingBar.js";
 import { isDesktopApp } from "./electronBridge.js";
 
 export type FeedbackType = "like" | "skip" | "not_suitable";
@@ -14,6 +15,13 @@ interface RecommendResponse {
   sessionId: string;
   context: StudyContext;
   recommendations: Recommendation[];
+}
+
+interface SimilarResponse {
+  sessionId: string;
+  context: StudyContext;
+  recommendations: Recommendation[];
+  basedOn: Recommendation["track"];
 }
 
 interface PlaylistResponse {
@@ -50,6 +58,7 @@ export default function App(): React.ReactElement {
   const [appInfo, setAppInfo] = useState<{ version: string | null; dataDir: string | null } | null>(null);
   const [showOnboarding, setShowOnboarding] = useState<boolean>(() => !hasOnboarded());
   const [showHelp, setShowHelp] = useState(false);
+  const [basedOn, setBasedOn] = useState<Recommendation["track"] | null>(null);
   const desktop = isDesktopApp();
 
   const finishOnboarding = useCallback((): void => {
@@ -120,6 +129,7 @@ export default function App(): React.ReactElement {
         if (!res.ok) throw new Error(data.error ?? "推荐失败");
         setResult(data);
         setPlaylist(null);
+        setBasedOn(null);
         setFeedbackByTrack({});
       } catch (err) {
         setError((err as Error).message);
@@ -128,6 +138,32 @@ export default function App(): React.ReactElement {
       }
     },
     [input, result?.sessionId],
+  );
+
+  const requestSimilar = useCallback(
+    async (trackId: string, track: Recommendation["track"]): Promise<void> => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch("/api/recommend-similar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trackId, sessionId: result?.sessionId }),
+        });
+        const data = (await res.json()) as SimilarResponse & { error?: string };
+        if (!res.ok) throw new Error(data.error ?? "推荐失败");
+        setResult({ sessionId: data.sessionId, context: data.context, recommendations: data.recommendations });
+        setPlaylist(null);
+        setBasedOn(track);
+        setFeedbackByTrack({});
+        setTab("recommend");
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [result?.sessionId],
   );
 
   const requestPlaylist = useCallback(async (): Promise<void> => {
@@ -145,10 +181,11 @@ export default function App(): React.ReactElement {
         body: JSON.stringify({ input: text, sessionId: result?.sessionId }),
       });
       const data = (await res.json()) as PlaylistResponse & { error?: string };
-      if (!res.ok) throw new Error(data.error ?? "歌单生成失败");
-      setPlaylist(data);
-      setResult(null);
-      setFeedbackByTrack({});
+        if (!res.ok) throw new Error(data.error ?? "歌单生成失败");
+        setPlaylist(data);
+        setResult(null);
+        setBasedOn(null);
+        setFeedbackByTrack({});
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -220,6 +257,8 @@ export default function App(): React.ReactElement {
 
       {tab === "recommend" ? (
         <>
+          <NowPlayingBar onSimilar={(id, track) => void requestSimilar(id, track)} />
+
           <section className="input-card">
             <label htmlFor="status-input">你现在是什么状态？</label>
             <textarea
@@ -281,7 +320,11 @@ export default function App(): React.ReactElement {
           {result !== null && (
             <>
               <div className="result-header">
-                <h2>为你选了 {result.recommendations.length} 首</h2>
+                <h2>
+                  {basedOn !== null
+                    ? `基于《${basedOn.title}》为你选了 ${result.recommendations.length} 首`
+                    : `为你选了 ${result.recommendations.length} 首`}
+                </h2>
                 <button className="ghost-btn" disabled={loading} onClick={nextBatch}>
                   换一批
                 </button>

@@ -3,12 +3,13 @@ import type { DataStore } from "../storage/jsonStore.js";
 import { parseContext } from "../core/parser/rulesParser.js";
 import { recommend } from "../core/recommend/engine.js";
 import { buildPlaylist } from "../core/recommend/playlist.js";
+import { contextFromTrack, matchPlayingTrack } from "../core/recommend/contextFromTrack.js";
 import { parseSongFeedback, applyFeatureDelta } from "../core/learn/featureLearner.js";
 import { detectNowPlaying } from "../core/native/nowPlaying.js";
 import { validateImportRows } from "../core/import/validate.js";
 import { importCsv } from "../core/import/csv.js";
 import { getSampleLibrary } from "../sample/sampleLibrary.js";
-import type { FeedbackEvent, FeedbackType, RecommendationSession } from "../core/types.js";
+import type { FeedbackEvent, FeedbackType, Recommendation, RecommendationSession, StudyContext } from "../core/types.js";
 import { randomUUID } from "node:crypto";
 
 /**
@@ -62,6 +63,54 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir }
       dataDir: dataDir ?? null,
     }),
   );
+
+  /** 推荐/歌单共用的执行链：反馈排除 → 近期降权 → 引擎 → 会话记录 */
+  const runRecommend = async (
+    context: StudyContext,
+    opts: { sessionId?: unknown; excludeTrackIds?: unknown; limit: number },
+  ): Promise<{ sessionId: string; recommendations: Recommendation[] } | { error: string }> => {
+    const tracks = await store.loadTracks();
+    if (tracks.length === 0) {
+      return { error: "音乐库为空，请先在「音乐库」导入数据" };
+    }
+    const sid = typeof opts.sessionId === "string" && opts.sessionId ? opts.sessionId : randomUUID();
+    const feedback = await store.loadFeedback();
+    const sessions = await store.loadSessions();
+
+    // 本会话内被标"不适合"的曲目不再出现
+    const excluded = new Set(
+      feedback.filter((f) => f.sessionId === sid && f.type === "not_suitable").map((f) => f.trackId),
+    );
+    if (Array.isArray(opts.excludeTrackIds)) {
+      for (const id of opts.excludeTrackIds) {
+        if (typeof id === "string") excluded.add(id);
+      }
+    }
+    const recentTrackIds = sessions
+      .filter((s) => s.id !== sid)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 2)
+      .flatMap((s) => s.trackIds);
+
+    const recommendations = recommend({
+      tracks,
+      context,
+      feedbackEvents: feedback,
+      recentTrackIds,
+      excludeTrackIds: [...excluded],
+      limit: opts.limit,
+      now: now(),
+    });
+
+    const session: RecommendationSession = {
+      id: sid,
+      createdAt: now().toISOString(),
+      context,
+      trackIds: recommendations.map((r) => r.track.id),
+    };
+    await store.upsertSession(session);
+    return { sessionId: sid, recommendations };
+  };
 
   app.get("/api/history", async (c) => {
     const [sessions, feedback, tracks] = await Promise.all([
@@ -156,42 +205,11 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir }
     }
 
     const context = parseContext(input).context;
-    const tracks = await store.loadTracks();
-    if (tracks.length === 0) {
-      return c.json({ error: "音乐库为空，请先在「音乐库」导入数据" }, 400);
-    }
-    const sid = typeof sessionId === "string" && sessionId ? sessionId : randomUUID();
-    const feedback = await store.loadFeedback();
-    const sessions = await store.loadSessions();
-    const recentTrackIds = sessions
-      .filter((s) => s.id !== sid)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 2)
-      .flatMap((s) => s.trackIds);
-    const rejected = new Set(
-      feedback.filter((f) => f.sessionId === sid && f.type === "not_suitable").map((f) => f.trackId),
-    );
+    const outcome = await runRecommend(context, { sessionId, limit: 60 });
+    if ("error" in outcome) return c.json({ error: outcome.error }, 400);
+    const playlist = buildPlaylist(outcome.recommendations, context.durationMinutes);
 
-    const ranked = recommend({
-      tracks,
-      context,
-      feedbackEvents: feedback,
-      recentTrackIds,
-      excludeTrackIds: [...rejected],
-      limit: 60,
-      now: now(),
-    });
-    const playlist = buildPlaylist(ranked, context.durationMinutes);
-
-    const session: RecommendationSession = {
-      id: sid,
-      createdAt: now().toISOString(),
-      context,
-      trackIds: playlist.tracks.map((r) => r.track.id),
-    };
-    await store.upsertSession(session);
-
-    return c.json({ sessionId: sid, context, playlist });
+    return c.json({ sessionId: outcome.sessionId, context, playlist });
   });
 
   app.post("/api/tracks/:id/learn", async (c) => {
@@ -257,50 +275,57 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir }
     }
 
     const context = parseContext(input).context;
+    const outcome = await runRecommend(context, { sessionId, excludeTrackIds, limit: 10 });
+    if ("error" in outcome) return c.json({ error: outcome.error }, 400);
+
+    return c.json({ sessionId: outcome.sessionId, context, recommendations: outcome.recommendations });
+  });
+
+  /** 正在播放 + 曲库匹配：检测到播放中的歌后，找到库内对应曲目（找不到则 track 为 null） */
+  app.get("/api/now-playing/current", async (c) => {
+    const playing = await detectNowPlaying();
+    if (!playing.playing) return c.json({ playing: false });
     const tracks = await store.loadTracks();
-    if (tracks.length === 0) {
-      return c.json({ error: "音乐库为空，请先在「音乐库」导入数据" }, 400);
+    const track = matchPlayingTrack(tracks, playing);
+    return c.json({ ...playing, track: track ?? null });
+  });
+
+  /** 基于正在播放/指定曲目的"找相似"推荐：曲目特征直接构造情境 */
+  app.post("/api/recommend-similar", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体必须是 JSON" }, 400);
     }
-
-    const sid = typeof sessionId === "string" && sessionId ? sessionId : randomUUID();
-    const feedback = await store.loadFeedback();
-    const sessions = await store.loadSessions();
-
-    // 本会话内被标"不适合"的曲目不再出现
-    const sessionRejected = new Set(
-      feedback.filter((f) => f.sessionId === sid && f.type === "not_suitable").map((f) => f.trackId),
-    );
-    if (Array.isArray(excludeTrackIds)) {
-      for (const id of excludeTrackIds) {
-        if (typeof id === "string") sessionRejected.add(id);
-      }
-    }
-
-    const recentTrackIds = sessions
-      .filter((s) => s.id !== sid)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 2)
-      .flatMap((s) => s.trackIds);
-
-    const recommendations = recommend({
-      tracks,
-      context,
-      feedbackEvents: feedback,
-      recentTrackIds,
-      excludeTrackIds: [...sessionRejected],
-      limit: 10,
-      now: now(),
-    });
-
-    const session: RecommendationSession = {
-      id: sid,
-      createdAt: now().toISOString(),
-      context,
-      trackIds: recommendations.map((r) => r.track.id),
+    const { trackId, sessionId, excludeTrackIds } = (body ?? {}) as {
+      trackId?: unknown;
+      sessionId?: unknown;
+      excludeTrackIds?: unknown;
     };
-    await store.upsertSession(session);
+    if (typeof trackId !== "string" || trackId === "") {
+      return c.json({ error: "缺少 trackId" }, 400);
+    }
+    const tracks = await store.loadTracks();
+    const track = tracks.find((t) => t.id === trackId);
+    if (track === undefined) return c.json({ error: "曲目不存在" }, 404);
 
-    return c.json({ sessionId: sid, context, recommendations });
+    const context = contextFromTrack(track);
+    // 相似推荐不把基准曲目自己再排进来
+    const extra = Array.isArray(excludeTrackIds) ? excludeTrackIds : [];
+    const outcome = await runRecommend(context, {
+      sessionId,
+      excludeTrackIds: [trackId, ...extra],
+      limit: 10,
+    });
+    if ("error" in outcome) return c.json({ error: outcome.error }, 400);
+
+    return c.json({
+      sessionId: outcome.sessionId,
+      context,
+      recommendations: outcome.recommendations,
+      basedOn: track,
+    });
   });
 
   app.post("/api/feedback", async (c) => {
