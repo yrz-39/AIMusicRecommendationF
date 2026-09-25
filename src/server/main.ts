@@ -14,6 +14,8 @@ const APP_VERSION = (JSON.parse(readFileSync(new URL("../../package.json", impor
 loadDotEnv([path.resolve(".env")]);
 const LLM = readLlmConfig();
 if (LLM !== null) console.log(`LLM 解析已启用: ${LLM.baseUrl} / ${LLM.model}`);
+const NETEASE_COOKIE = process.env.STUDYMOOD_NETEASE_COOKIE?.trim();
+if (NETEASE_COOKIE !== undefined && NETEASE_COOKIE !== "") console.log("网易云登录态已配置（歌单全量导入可用）");
 
 async function main(): Promise<void> {
   const store = new JsonFileStore(DATA_DIR);
@@ -22,7 +24,7 @@ async function main(): Promise<void> {
     console.log("首次运行：已导入示例音乐库（导入真实库后会整体替换）");
   }
 
-  const app = createApp({ store, appVersion: APP_VERSION, dataDir: DATA_DIR, llm: LLM });
+  const app = createApp({ store, appVersion: APP_VERSION, dataDir: DATA_DIR, llm: LLM, neteaseCookie: NETEASE_COOKIE });
 
   // 生产模式：存在构建产物时由 API 进程直接托管前端
   if (existsSync(WEB_DIST)) {

@@ -14,6 +14,12 @@ export interface NeteasePlaylist {
   tracks: Track[];
 }
 
+/** 网易云登录态（MUSIC_U cookie），可选：提供后可读取登录账号可见的完整歌单（含私密歌单） */
+export interface NeteaseFetchOptions {
+  cookie?: string;
+  fetchImpl?: typeof fetch;
+}
+
 /** 从分享文本/链接/纯 id 中提取歌单 id（支持 music.163.com 长链与 163cn.tv 短链跳转后的链接） */
 export function extractPlaylistId(input: string): string | null {
   const text = input.trim();
@@ -47,12 +53,13 @@ function songToTrack(song: NeteaseSong): Track | null {
   };
 }
 
-async function getText(url: string, fetchImpl: typeof fetch): Promise<string> {
+async function getText(url: string, fetchImpl: typeof fetch, cookie?: string): Promise<string> {
   const res = await fetchImpl(url, {
     headers: {
       // 匿名只读公开页面；UA 取普通浏览器值避免被直接拒绝
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
       Referer: "https://music.163.com/",
+      ...(cookie !== undefined && cookie !== "" ? { Cookie: `MUSIC_U=${cookie}` } : {}),
     },
     redirect: "follow",
     signal: AbortSignal.timeout(15000),
@@ -64,8 +71,9 @@ async function getText(url: string, fetchImpl: typeof fetch): Promise<string> {
 /** 抓取公开歌单 → 规范化曲目列表。短链会先跳转，从最终地址提取 id。 */
 export async function fetchNeteasePlaylist(
   input: string,
-  fetchImpl: typeof fetch = fetch,
+  options: NeteaseFetchOptions = {},
 ): Promise<NeteasePlaylist> {
+  const { cookie, fetchImpl = fetch } = options;
   let id = extractPlaylistId(input);
   if (id === null && /163cn\.tv|music\.163\.com/.test(input.trim())) {
     // 短链：跟随跳转后从最终 URL 提取
@@ -80,11 +88,13 @@ export async function fetchNeteasePlaylist(
     throw new Error("无法识别歌单链接：请粘贴网易云歌单的分享链接或纯数字 id");
   }
 
-  const detail = JSON.parse(await getText(`https://music.163.com/api/playlist/detail?id=${id}`, fetchImpl)) as {
+  const detail = JSON.parse(
+    await getText(`https://music.163.com/api/playlist/detail?id=${id}`, fetchImpl, cookie),
+  ) as {
     result?: { name?: string; trackCount?: number; tracks?: NeteaseSong[]; trackIds?: Array<{ id?: number }> };
   };
   const result = detail.result;
-  if (result === undefined) throw new Error("歌单不存在或未公开（私密歌单无法匿名读取）");
+  if (result === undefined) throw new Error("歌单不存在或未公开（私密歌单需要配置登录 Cookie）");
 
   const name = result.name?.trim() || "网易云歌单";
   const songs: NeteaseSong[] = result.tracks ?? [];
@@ -111,6 +121,7 @@ export async function fetchNeteasePlaylist(
         const detailText = await getText(
           `https://music.163.com/api/song/detail/?id=${batch[0]}&ids=${encodeURIComponent(JSON.stringify(batch))}`,
           fetchImpl,
+          cookie,
         );
         const parsed = JSON.parse(detailText) as { songs?: NeteaseSong[] };
         for (const song of parsed.songs ?? []) {
@@ -124,6 +135,13 @@ export async function fetchNeteasePlaylist(
         /* 单批失败跳过，不让整单导入卡死 */
       }
     }
+  }
+
+  // 未登录匿名访问用户歌单会被截断到前 10 首：明确提示而不是静默丢歌
+  if (cookie === undefined && tracks.length > 0 && tracks.length < total) {
+    throw new Error(
+      `未登录只能读取该歌单的前 ${tracks.length} 首（共 ${total} 首）。配置网易云登录 Cookie 后即可导入全部歌曲`,
+    );
   }
 
   if (tracks.length === 0) throw new Error("歌单里没有可导入的歌曲");

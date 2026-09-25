@@ -230,9 +230,10 @@ describe("网易云歌单导入", () => {
   });
 
   it("抓取并映射曲目（含合作歌手、时长秒换算）", async () => {
-    const playlist = await fetchNeteasePlaylist("https://music.163.com/playlist?id=42", (async (url: RequestInfo | URL) => {
+    const mock = (async (url: RequestInfo | URL) => {
       return new Response(String(url).includes("playlist/detail") ? playlistJson : '{"songs":[]}', { status: 200 });
-    }) as typeof fetch);
+    }) as typeof fetch;
+    const playlist = await fetchNeteasePlaylist("https://music.163.com/playlist?id=42", { fetchImpl: mock });
     expect(playlist.name).toBe("我的学习歌单");
     expect(playlist.tracks).toHaveLength(2);
     expect(playlist.tracks[0]).toMatchObject({
@@ -243,6 +244,16 @@ describe("网易云歌单导入", () => {
       durationSec: 269,
     });
     expect(playlist.tracks[1]?.artist).toBe("Linkin Park");
+  });
+
+  it("配置 cookie 时请求头带 MUSIC_U", async () => {
+    let captured: string | undefined;
+    const mock = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      captured = (init?.headers as Record<string, string>)?.Cookie;
+      return new Response(playlistJson, { status: 200 });
+    }) as typeof fetch;
+    await fetchNeteasePlaylist("3778678", { cookie: "abc123", fetchImpl: mock });
+    expect(captured).toBe("MUSIC_U=abc123");
   });
 
   it("API：无效链接/空输入返回明确错误（不访问外网）", async () => {

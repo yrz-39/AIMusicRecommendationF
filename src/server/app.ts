@@ -37,6 +37,8 @@ export interface AppDeps {
   dataDir?: string;
   /** LLM 配置（.env 注入）；null = 未配置，全部走规则解析 */
   llm?: LlmConfig | null;
+  /** 网易云登录态（MUSIC_U cookie 值，.env 注入）；可选，提供后歌单导入不受匿名 10 首截断 */
+  neteaseCookie?: string;
 }
 
 /** 首次运行且曲库为空时导入示例库（通过持久化 flag 保证只执行一次） */
@@ -53,7 +55,14 @@ export async function seedSampleIfFirstRun(store: DataStore): Promise<boolean> {
   return true;
 }
 
-export function createApp({ store, now = () => new Date(), appVersion, dataDir, llm = null }: AppDeps): Hono {
+export function createApp({
+  store,
+  now = () => new Date(),
+  appVersion,
+  dataDir,
+  llm = null,
+  neteaseCookie,
+}: AppDeps): Hono {
   const app = new Hono();
 
   app.onError((err, c) => {
@@ -290,7 +299,7 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir, 
 
     let playlist;
     try {
-      playlist = await fetchNeteasePlaylist(input);
+      playlist = await fetchNeteasePlaylist(input, { cookie: neteaseCookie });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 502);
     }
