@@ -672,3 +672,160 @@ body.mini-mode .track-title {
 body.mini-mode .score-box {
   width: 74px;
 }
+
+/* ---------- 浮层：新手引导 / 帮助 ---------- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(67, 48, 56, 0.45);
+  backdrop-filter: blur(3px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.modal-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: 0 18px 60px rgba(67, 48, 56, 0.28);
+  max-width: 540px;
+  width: 100%;
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 30px 32px 26px;
+}
+
+.modal-card h2 {
+  margin: 0 0 14px;
+  font-size: 21px;
+}
+
+.onboard-emoji {
+  font-size: 42px;
+  line-height: 1;
+  margin-bottom: 10px;
+}
+
+.onboard-body p {
+  margin: 0 0 12px;
+  color: var(--text);
+}
+
+.privacy-note {
+  background: var(--accent-soft);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  color: var(--text-dim);
+}
+
+.help-list {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.help-list strong,
+.onboard-body strong {
+  color: var(--text);
+}
+
+.help-list em {
+  color: var(--accent);
+  font-style: normal;
+}
+
+.fb {
+  font-style: normal;
+}
+
+.fb.bad {
+  color: var(--red);
+}
+
+.fb.like {
+  color: var(--accent);
+}
+
+.onboard-dots {
+  display: flex;
+  gap: 8px;
+  margin: 18px 0 14px;
+}
+
+.onboard-dots .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--border);
+  transition: background 0.2s;
+}
+
+.onboard-dots .dot.active {
+  background: var(--accent);
+}
+
+.onboard-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.help-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.help-header h2 {
+  margin: 0;
+}
+
+.help-section {
+  margin: 16px 0;
+}
+
+.help-section h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.help-path {
+  display: inline-block;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 4px 8px;
+  word-break: break-all;
+  margin: 4px 0;
+  color: var(--text);
+}
+
+body.mini-mode .modal-card {
+  padding: 20px 18px;
+  border-radius: 14px;
+}
+
+body.mini-mode .onboard-emoji {
+  font-size: 30px;
+}
+
+body.mini-mode .modal-card h2 {
+  font-size: 17px;
+}
+
+body.mini-mode .help-list {
+  font-size: 12.5px;
+}
+
+.onboard-actions button {
+  white-space: nowrap;
+}

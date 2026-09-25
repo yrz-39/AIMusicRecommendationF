@@ -55,12 +55,31 @@ describe("JsonFileStore", () => {
     expect(files.some((f) => f.endsWith(".tmp"))).toBe(false);
   });
 
-  it("损坏的数据文件会明确报错而不是静默清空", async () => {
+  it("损坏的数据文件被隔离保留，应用从空状态继续（不静默清空、不卡死）", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "studymood-test-"));
     dirs.push(dir);
-    await writeFile(path.join(dir, "feedback.json"), "{broken json", "utf8");
+    const broken = "{broken json —— 用户写了一半崩溃了";
+    await writeFile(path.join(dir, "feedback.json"), broken, "utf8");
     const store = new JsonFileStore(dir);
-    await expect(store.loadFeedback()).rejects.toThrow("读取失败");
+    // 读取得到空状态而不是抛错
+    expect(await store.loadFeedback()).toEqual([]);
+    // 原文件被改名保留（数据没有丢），原名位置不再有损坏文件
+    const files = await readdir(dir);
+    const quarantined = files.find((f) => f.startsWith("feedback.json.corrupt-"));
+    expect(quarantined).toBeDefined();
+    const { readFile } = await import("node:fs/promises");
+    expect(await readFile(path.join(dir, quarantined as string), "utf8")).toBe(broken);
+    // 应用继续正常工作：追加反馈会写出新的合法文件
+    await store.appendFeedback({ id: "f1", trackId: "t1", type: "like", createdAt: new Date().toISOString() });
+    expect((await store.loadFeedback()).map((e) => e.id)).toEqual(["f1"]);
+  });
+
+  it("JSON 合法但结构异常（events 为 null）时返回空数组而不是崩溃", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "studymood-test-"));
+    dirs.push(dir);
+    await writeFile(path.join(dir, "feedback.json"), '{"events": null}', "utf8");
+    const store = new JsonFileStore(dir);
+    expect(await store.loadFeedback()).toEqual([]);
   });
 
   it("空库返回空数组", async () => {

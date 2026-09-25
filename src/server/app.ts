@@ -26,6 +26,10 @@ export interface AppDeps {
   store: DataStore;
   /** 测试时注入固定时间，默认真实时钟 */
   now?: () => Date;
+  /** 应用版本（帮助页展示；Web 版读 package.json，桌面版读 app.getVersion()） */
+  appVersion?: string;
+  /** 数据目录绝对路径（帮助页展示，方便用户备份/迁移） */
+  dataDir?: string;
 }
 
 /** 首次运行且曲库为空时导入示例库（通过持久化 flag 保证只执行一次） */
@@ -42,7 +46,7 @@ export async function seedSampleIfFirstRun(store: DataStore): Promise<boolean> {
   return true;
 }
 
-export function createApp({ store, now = () => new Date() }: AppDeps): Hono {
+export function createApp({ store, now = () => new Date(), appVersion, dataDir }: AppDeps): Hono {
   const app = new Hono();
 
   app.onError((err, c) => {
@@ -50,7 +54,14 @@ export function createApp({ store, now = () => new Date() }: AppDeps): Hono {
     return c.json({ error: err.message ?? "内部错误" }, 500);
   });
 
-  app.get("/api/health", (c) => c.json({ ok: true, time: now().toISOString() }));
+  app.get("/api/health", (c) =>
+    c.json({
+      ok: true,
+      time: now().toISOString(),
+      version: appVersion ?? null,
+      dataDir: dataDir ?? null,
+    }),
+  );
 
   app.get("/api/history", async (c) => {
     const [sessions, feedback, tracks] = await Promise.all([

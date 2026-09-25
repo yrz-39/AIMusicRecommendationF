@@ -78,7 +78,7 @@ async function startApi(): Promise<number> {
   if (await seedSampleIfFirstRun(store)) {
     log("首次运行：已导入示例音乐库");
   }
-  const appHono = createApp({ store });
+  const appHono = createApp({ store, appVersion: app.getVersion(), dataDir });
 
   // 与 server/main.ts 相同的静态托管（生产构建产物）
   const webDist = app.isPackaged

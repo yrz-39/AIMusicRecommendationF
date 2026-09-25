@@ -4,6 +4,8 @@ import { ContextPanel } from "./components/ContextPanel.js";
 import { TrackCard } from "./components/TrackCard.js";
 import { LibraryView } from "./components/LibraryView.js";
 import { HistoryView } from "./components/HistoryView.js";
+import { Onboarding, hasOnboarded, markOnboarded } from "./components/Onboarding.js";
+import { HelpModal } from "./components/HelpModal.js";
 import { isDesktopApp } from "./electronBridge.js";
 
 export type FeedbackType = "like" | "skip" | "not_suitable";
@@ -45,7 +47,15 @@ export default function App(): React.ReactElement {
   const [libraryCount, setLibraryCount] = useState<number | null>(null);
   const [feedbackByTrack, setFeedbackByTrack] = useState<Record<string, FeedbackType>>({});
   const [miniMode, setMiniMode] = useState(false);
+  const [appInfo, setAppInfo] = useState<{ version: string | null; dataDir: string | null } | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => !hasOnboarded());
+  const [showHelp, setShowHelp] = useState(false);
   const desktop = isDesktopApp();
+
+  const finishOnboarding = useCallback((): void => {
+    markOnboarded();
+    setShowOnboarding(false);
+  }, []);
 
   const toggleMiniMode = useCallback((): void => {
     if (!desktop) return;
@@ -53,7 +63,9 @@ export default function App(): React.ReactElement {
     setMiniMode(next);
     document.body.classList.toggle("mini-mode", next);
     void window.electronAPI?.setMiniMode(next);
-  }, [desktop, miniMode]);
+    // 小窗空间有限，引导中出现小窗切换时直接完成引导
+    if (next && showOnboarding) finishOnboarding();
+  }, [desktop, miniMode, showOnboarding, finishOnboarding]);
 
   const refreshLibraryCount = useCallback(async (): Promise<void> => {
     try {
@@ -68,6 +80,22 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     void refreshLibraryCount();
   }, [refreshLibraryCount]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async (): Promise<void> => {
+      try {
+        const res = await fetch("/api/health");
+        const data = (await res.json()) as { version: string | null; dataDir: string | null };
+        if (!cancelled) setAppInfo({ version: data.version ?? null, dataDir: data.dataDir ?? null });
+      } catch {
+        /* health 拉不到时帮助页显示占位文案 */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const requestRecommend = useCallback(
     async (overrides?: { excludeTrackIds?: string[]; sessionId?: string }): Promise<void> => {
@@ -170,6 +198,10 @@ export default function App(): React.ReactElement {
             }}
           >
             音乐库 {libraryCount === null ? "…" : `${libraryCount} 首`}
+          </a>
+          {"  "}
+          <a onClick={() => setShowHelp(true)} title="帮助与隐私">
+            ？帮助
           </a>
         </div>
       </header>
@@ -277,6 +309,15 @@ export default function App(): React.ReactElement {
         <LibraryView onChanged={refreshLibraryCount} />
       ) : (
         <HistoryView />
+      )}
+
+      {showOnboarding && !miniMode && <Onboarding onDone={finishOnboarding} />}
+      {showHelp && (
+        <HelpModal
+          version={appInfo?.version ?? null}
+          dataDir={appInfo?.dataDir ?? null}
+          onClose={() => setShowHelp(false)}
+        />
       )}
 
       <footer className="footer">

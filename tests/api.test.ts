@@ -22,6 +22,15 @@ describe("API", () => {
     expect(data.ok).toBe(true);
   });
 
+  it("health 返回注入的版本号与数据目录", async () => {
+    const store = new MemoryStore();
+    const app = createApp({ store, appVersion: "0.1.0", dataDir: "D:/somewhere/data" });
+    const res = await app.request("/api/health");
+    const data = (await json(res)) as { ok: boolean; version: string | null; dataDir: string | null };
+    expect(data.version).toBe("0.1.0");
+    expect(data.dataDir).toBe("D:/somewhere/data");
+  });
+
   it("首次运行导入示例库且只执行一次", async () => {
     const store = new MemoryStore();
     expect(await seedSampleIfFirstRun(store)).toBe(true);

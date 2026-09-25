@@ -61,14 +61,26 @@ export class JsonFileStore implements DataStore {
   }
 
   private async readJson<T>(name: string, fallback: T): Promise<T> {
+    let raw: string;
     try {
-      const raw = await fs.readFile(this.file(name), "utf8");
-      return JSON.parse(raw) as T;
+      raw = await fs.readFile(this.file(name), "utf8");
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return fallback;
-      // 文件损坏时不要静默覆盖：抛出，由上层决定（保护用户数据）
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return fallback;
       throw new Error(`数据文件 ${name} 读取失败: ${(err as Error).message}`);
+    }
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      // 打包版的普通用户无法手动修数据文件，抛错会让应用永远起不来。
+      // 折衷：把损坏文件改名保留（数据没有丢，可人工找回），应用从空状态继续。
+      const quarantine = `${this.file(name)}.corrupt-${Date.now()}`;
+      try {
+        await fs.rename(this.file(name), quarantine);
+        console.error(`[storage] ${name} 解析失败，已隔离为 ${path.basename(quarantine)}（原文件已保留）`);
+      } catch (renameErr) {
+        console.error(`[storage] ${name} 解析失败且隔离失败: ${(renameErr as Error).message}`);
+      }
+      return fallback;
     }
   }
 
@@ -80,8 +92,8 @@ export class JsonFileStore implements DataStore {
   }
 
   async loadTracks(): Promise<Track[]> {
-    const data = await this.readJson<{ tracks: Track[] }>("library.json", { tracks: [] });
-    return data.tracks;
+    const data = await this.readJson<{ tracks?: Track[] }>("library.json", {});
+    return Array.isArray(data.tracks) ? data.tracks : [];
   }
 
   async saveTracks(tracks: Track[]): Promise<void> {
@@ -89,36 +101,34 @@ export class JsonFileStore implements DataStore {
   }
 
   async loadFeedback(): Promise<FeedbackEvent[]> {
-    const data = await this.readJson<{ events: FeedbackEvent[] }>("feedback.json", { events: [] });
-    return data.events;
+    const data = await this.readJson<{ events?: FeedbackEvent[] }>("feedback.json", {});
+    return Array.isArray(data.events) ? data.events : [];
   }
 
   async appendFeedback(event: FeedbackEvent): Promise<void> {
-    const data = await this.readJson<{ events: FeedbackEvent[] }>("feedback.json", { events: [] });
-    data.events.push(event);
-    await this.writeJson("feedback.json", data);
+    const events = await this.loadFeedback();
+    events.push(event);
+    await this.writeJson("feedback.json", { events });
   }
 
   async loadSessions(): Promise<RecommendationSession[]> {
-    const data = await this.readJson<{ sessions: RecommendationSession[] }>("sessions.json", { sessions: [] });
-    return data.sessions;
+    const data = await this.readJson<{ sessions?: RecommendationSession[] }>("sessions.json", {});
+    return Array.isArray(data.sessions) ? data.sessions : [];
   }
 
   async appendSession(session: RecommendationSession): Promise<void> {
-    const data = await this.readJson<{ sessions: RecommendationSession[] }>("sessions.json", { sessions: [] });
-    data.sessions.push(session);
+    const sessions = await this.loadSessions();
+    sessions.push(session);
     // 只保留最近 200 个会话，防止无限增长
-    const trimmed = data.sessions.slice(-200);
-    await this.writeJson("sessions.json", { sessions: trimmed });
+    await this.writeJson("sessions.json", { sessions: sessions.slice(-200) });
   }
 
   async upsertSession(session: RecommendationSession): Promise<void> {
-    const data = await this.readJson<{ sessions: RecommendationSession[] }>("sessions.json", { sessions: [] });
-    const index = data.sessions.findIndex((s) => s.id === session.id);
-    if (index >= 0) data.sessions[index] = session;
-    else data.sessions.push(session);
-    const trimmed = data.sessions.slice(-200);
-    await this.writeJson("sessions.json", { sessions: trimmed });
+    const sessions = await this.loadSessions();
+    const index = sessions.findIndex((s) => s.id === session.id);
+    if (index >= 0) sessions[index] = session;
+    else sessions.push(session);
+    await this.writeJson("sessions.json", { sessions: sessions.slice(-200) });
   }
 
   async loadFlag(name: string): Promise<boolean> {
@@ -130,14 +140,14 @@ export class JsonFileStore implements DataStore {
   }
 
   async loadLearnEvents(): Promise<LearnEvent[]> {
-    const data = await this.readJson<{ events: LearnEvent[] }>("learnEvents.json", { events: [] });
-    return data.events;
+    const data = await this.readJson<{ events?: LearnEvent[] }>("learnEvents.json", {});
+    return Array.isArray(data.events) ? data.events : [];
   }
 
   async appendLearnEvent(event: LearnEvent): Promise<void> {
-    const data = await this.readJson<{ events: LearnEvent[] }>("learnEvents.json", { events: [] });
-    data.events.push(event);
-    await this.writeJson("learnEvents.json", data);
+    const events = await this.loadLearnEvents();
+    events.push(event);
+    await this.writeJson("learnEvents.json", { events });
   }
 }
 
