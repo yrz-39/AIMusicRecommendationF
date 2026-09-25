@@ -1,4 +1,5 @@
 import type { Track } from "../types.js";
+import { normalizeGenres } from "./genreMap.js";
 
 /**
  * 本地音频文件导入（M3）：标签 → 曲目装配与校验。
@@ -54,7 +55,7 @@ export function assembleTrack(fileName: string, tags: AudioTags): AssembledAudio
   if (typeof tags.durationSec !== "number" || !Number.isFinite(tags.durationSec) || tags.durationSec <= 0) {
     return { fileName, reason: "无法读取时长（文件可能损坏或格式不支持）" };
   }
-  const genres = (tags.genres ?? []).map((g) => g.trim().toLowerCase()).filter((g) => g !== "").slice(0, 4);
+  const genres = normalizeGenres(tags.genres);
   return {
     fileName,
     track: {
@@ -63,7 +64,7 @@ export function assembleTrack(fileName: string, tags: AudioTags): AssembledAudio
       artist,
       album: tags.album?.trim() || undefined,
       durationSec: Math.round(tags.durationSec),
-      genres: genres.length > 0 ? genres : undefined,
+      genres,
       source: { kind: "manual" },
     },
   };

@@ -19,7 +19,7 @@ const CSV_TEMPLATE =
   "晴天,周杰伦,叶惠美,4:29,pop,0.5,温暖,中文,0\n" +
   "Aruarian Dance,Nujabes,4:23,lofi,0.3,平静专注,纯音乐,1";
 
-export function LibraryView({ onChanged }: { onChanged: () => void }): React.ReactElement {
+export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void; llmAvailable: boolean }): React.ReactElement {
   const [tracks, setTracks] = useState<Track[] | null>(null);
   const [filter, setFilter] = useState("");
   const [format, setFormat] = useState<ImportFormat>("csv");
@@ -29,6 +29,8 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [audioParsed, setAudioParsed] = useState<ParsedAudio[] | null>(null);
   const [audioBusy, setAudioBusy] = useState(false);
+  const [prelabel, setPrelabel] = useState<{ done: number; total: number } | null>(null);
+  const [prelabelMsg, setPrelabelMsg] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -43,6 +45,44 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
   useEffect(() => {
     void load();
   }, [load]);
+
+  /** 分批调 LLM 预标注，展示「正在联网预处理」进度；每批完成即刷新曲库 */
+  const runPrelabel = useCallback(
+    async (trackIds: string[]): Promise<void> => {
+      if (trackIds.length === 0) return;
+      setPrelabelMsg(null);
+      setPrelabel({ done: 0, total: trackIds.length });
+      let labeled = 0;
+      for (let i = 0; i < trackIds.length; i += 12) {
+        const batch = trackIds.slice(i, i + 12);
+        try {
+          const res = await fetch("/api/library/prelabel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trackIds: batch }),
+          });
+          if (res.ok) {
+            const d = (await res.json()) as { labeled: string[] };
+            labeled += d.labeled.length;
+          }
+        } catch {
+          /* 单批失败继续下一批 */
+        }
+        setPrelabel((prev) => (prev ? { done: Math.min(prev.done + batch.length, prev.total), total: prev.total } : null));
+      }
+      setPrelabel(null);
+      setPrelabelMsg(labeled > 0 ? `🤖 AI 已为 ${labeled} 首歌填充了初始听感特征，听到不准的随时「教它」修正` : "🤖 这些歌 AI 也没有把握，听到哪首教哪首吧");
+      await load();
+      onChanged();
+    },
+    [load, onChanged],
+  );
+
+  /** 一键补全曲库中所有缺失特征的歌（按当前列表实时计算） */
+  const prelabelMissing = useCallback((): void => {
+    const missing = (tracks ?? []).filter((t) => t.energy === undefined).map((t) => t.id);
+    void runPrelabel(missing);
+  }, [tracks, runPrelabel]);
 
   const doImport = useCallback(async (): Promise<void> => {
     setImportMsg(null);
@@ -60,6 +100,7 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
       const data = (await res.json()) as {
         imported: number;
         rejected: Array<{ row: number; reason: string }>;
+        ids?: string[];
         error?: string;
       };
       if (!res.ok) throw new Error(data.error ?? "导入失败");
@@ -72,10 +113,12 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
       if (data.imported > 0) setImportText("");
       await load();
       onChanged();
+      const newIds = (data.ids ?? []).filter((id) => id !== "");
+      if (newIds.length > 0) await runPrelabel(newIds);
     } catch (err) {
       setImportMsg(`导入失败：${(err as Error).message}`);
     }
-  }, [format, importText, load, onChanged]);
+  }, [format, importText, load, onChanged, runPrelabel]);
 
   /** 浏览器本地解析音频标签（文件不离开本机），解析失败时用文件名兜底 */
   const parseAudioFiles = useCallback(async (files: File[]): Promise<void> => {
@@ -121,6 +164,7 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
       const data = (await res.json()) as {
         imported: number;
         rejected: Array<{ row: number; reason: string }>;
+        ids?: string[];
         error?: string;
       };
       if (!res.ok) throw new Error(data.error ?? "导入失败");
@@ -131,12 +175,15 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
       setAudioParsed(null);
       await load();
       onChanged();
+      // 新导入的歌特征为空：自动触发 AI 预标注（冷启动）
+      const newIds = (data.ids ?? []).filter((id) => id !== "");
+      if (newIds.length > 0) await runPrelabel(newIds);
     } catch (err) {
       setImportMsg(`导入失败：${(err as Error).message}`);
     } finally {
       setAudioBusy(false);
     }
-  }, [audioParsed, load, onChanged]);
+  }, [audioParsed, load, onChanged, runPrelabel]);
 
   const onPickFile = useCallback(async (file: File): Promise<void> => {
     const text = await file.text();
@@ -309,6 +356,25 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
           {importMsg !== null && <span style={{ fontSize: 13, color: "var(--text-dim)" }}>{importMsg}</span>}
         </div>
           </>
+        )}
+        {prelabel !== null && (
+          <div className="prelabel-bar">
+            <span className="pulse">🤖 正在联网预处理…（{prelabel.done}/{prelabel.total} 首）</span>
+            <span className="dim">AI 正在根据歌名、歌手与流派判断听感特征</span>
+          </div>
+        )}
+        {prelabel === null && prelabelMsg !== null && <div className="prelabel-bar done">{prelabelMsg}</div>}
+        {llmAvailable && prelabel === null && (tracks ?? []).some((t) => t.energy === undefined) && (
+          <div style={{ marginTop: 10 }}>
+            <button
+              className="ghost-btn"
+              style={{ padding: "5px 14px" }}
+              disabled={audioBusy}
+              onClick={prelabelMissing}
+            >
+              🤖 AI 补全缺失特征（{(tracks ?? []).filter((t) => t.energy === undefined).length} 首）
+            </button>
+          </div>
         )}
       </section>
 

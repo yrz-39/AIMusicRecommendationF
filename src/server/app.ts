@@ -5,6 +5,8 @@ import { contextFromTrack, matchPlayingTrack } from "../core/recommend/contextFr
 import { parseContextAuto, parseSongFeedbackAuto } from "../core/llm/auto.js";
 import { buildPlaylist } from "../core/recommend/playlist.js";
 import { applyFeatureDelta } from "../core/learn/featureLearner.js";
+import { prelabelTracks } from "../core/llm/prelabel.js";
+import { normalizeGenres } from "../core/import/genreMap.js";
 import { detectNowPlaying } from "../core/native/nowPlaying.js";
 import { validateImportRows } from "../core/import/validate.js";
 import { importCsv } from "../core/import/csv.js";
@@ -64,8 +66,72 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir, 
       time: now().toISOString(),
       version: appVersion ?? null,
       dataDir: dataDir ?? null,
+      llm: llm !== null,
     }),
   );
+
+  /** 曲库中特征缺失（energy 未标注）的曲目数，供 UI 提示「AI 补全」入口 */
+  app.get("/api/library/unlabeled-count", async (c) => {
+    const tracks = await store.loadTracks();
+    return c.json({ count: tracks.filter((t) => t.energy === undefined).length });
+  });
+
+  /**
+   * LLM 批量预标注：为特征缺失的曲目按歌名/歌手/流派推断初始特征。
+   * 每次处理一批（上限 15 首），由前端分批调用以展示进度。
+   * 每首的标注写入 learnEvents（parsedBy=llm），特征来源永远可追溯。
+   */
+  app.post("/api/library/prelabel", async (c) => {
+    if (llm === null) return c.json({ error: "未配置 LLM，无法自动标注" }, 400);
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体必须是 JSON" }, 400);
+    }
+    const ids = (body as { trackIds?: unknown } | null)?.trackIds;
+    if (!Array.isArray(ids) || ids.length === 0) return c.json({ error: "缺少 trackIds" }, 400);
+
+    const tracks = await store.loadTracks();
+    const targets = ids
+      .filter((id): id is string => typeof id === "string")
+      .map((id) => tracks.find((t) => t.id === id))
+      .filter((t): t is NonNullable<typeof t> => t !== undefined && t.energy === undefined)
+      .slice(0, 15);
+    if (targets.length === 0) return c.json({ labeled: [], changes: [], skipped: 0 });
+
+    const result = await prelabelTracks(targets, llm);
+    if (result === null) return c.json({ error: "LLM 标注失败，请稍后重试" }, 502);
+    if (result.labeled.length > 0) {
+      const applyMap = new Map(result.changes.map((ch) => [ch.trackId, ch.apply] as const));
+      await store.saveTracks(
+        tracks.map((t) => {
+          const a = applyMap.get(t.id);
+          if (a === undefined) return t;
+          return {
+            ...t,
+            energy: a.energy ?? t.energy,
+            moodTags: a.moodTags.length > 0 ? [...new Set([...(t.moodTags ?? []), ...a.moodTags])] : t.moodTags,
+            vocalDensity: a.vocalDensity ?? t.vocalDensity,
+            // 顺手把存量中文流派规范化，让能量先验兜底生效
+            genres: normalizeGenres(t.genres) ?? t.genres,
+          };
+        }),
+      );
+    }
+    for (const ch of result.changes) {
+      await store.appendLearnEvent({
+        id: randomUUID(),
+        trackId: ch.trackId,
+        text: "导入预标注（AI 依据歌曲名/歌手/流派推断）",
+        delta: { moodTags: [], matched: ch.changes },
+        parsedBy: "llm",
+        changes: ch.changes,
+        createdAt: now().toISOString(),
+      });
+    }
+    return c.json(result);
+  });
 
   /** 推荐/歌单共用的执行链：反馈排除 → 近期降权 → 引擎 → 会话记录 */
   const runRecommend = async (

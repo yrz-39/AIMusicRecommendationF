@@ -1,5 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { assembleTrack, parseAudioFileName, trackIdFromAudio } from "../src/core/import/audio.js";
+import { normalizeGenre, normalizeGenres } from "../src/core/import/genreMap.js";
+
+describe("normalizeGenre（流派中英映射）", () => {
+  it("中文流派映射到引擎先验 key", () => {
+    expect(normalizeGenre("流行")).toBe("pop");
+    expect(normalizeGenre("民谣")).toBe("folk");
+    expect(normalizeGenre("嘻哈")).toBe("hiphop");
+    expect(normalizeGenre("影视原声")).toBe("soundtrack");
+    expect(normalizeGenre("Lo-Fi")).toBe("lofi");
+    expect(normalizeGenre("后摇")).toBe("post-rock");
+  });
+
+  it("未知流派保留原文（小写），批量去重", () => {
+    expect(normalizeGenre("City Pop")).toBe("city-pop");
+    expect(normalizeGenre("小众曲风")).toBe("小众曲风");
+    expect(normalizeGenres(["流行", "Pop", "", "民谣"])).toEqual(["pop", "folk"]);
+    expect(normalizeGenres(undefined)).toBeUndefined();
+  });
+});
 
 describe("parseAudioFileName", () => {
   it("『歌手 - 歌名.mp3』拆出歌手与歌名", () => {

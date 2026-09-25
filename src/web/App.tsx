@@ -57,7 +57,7 @@ export default function App(): React.ReactElement {
   const [libraryCount, setLibraryCount] = useState<number | null>(null);
   const [feedbackByTrack, setFeedbackByTrack] = useState<Record<string, FeedbackType>>({});
   const [miniMode, setMiniMode] = useState(false);
-  const [appInfo, setAppInfo] = useState<{ version: string | null; dataDir: string | null } | null>(null);
+  const [appInfo, setAppInfo] = useState<{ version: string | null; dataDir: string | null; llmAvailable: boolean } | null>(null);
   const [showOnboarding, setShowOnboarding] = useState<boolean>(() => !hasOnboarded());
   const [showHelp, setShowHelp] = useState(false);
   const [basedOn, setBasedOn] = useState<Recommendation["track"] | null>(null);
@@ -97,8 +97,9 @@ export default function App(): React.ReactElement {
     void (async (): Promise<void> => {
       try {
         const res = await fetch("/api/health");
-        const data = (await res.json()) as { version: string | null; dataDir: string | null };
-        if (!cancelled) setAppInfo({ version: data.version ?? null, dataDir: data.dataDir ?? null });
+        const data = (await res.json()) as { version: string | null; dataDir: string | null; llm?: boolean };
+        if (!cancelled)
+          setAppInfo({ version: data.version ?? null, dataDir: data.dataDir ?? null, llmAvailable: data.llm === true });
       } catch {
         /* health 拉不到时帮助页显示占位文案 */
       }
@@ -351,7 +352,7 @@ export default function App(): React.ReactElement {
           )}
         </>
       ) : tab === "library" ? (
-        <LibraryView onChanged={refreshLibraryCount} />
+        <LibraryView onChanged={refreshLibraryCount} llmAvailable={appInfo?.llmAvailable === true} />
       ) : (
         <HistoryView />
       )}

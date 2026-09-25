@@ -7,8 +7,10 @@ import { chatJson } from "../src/core/llm/deepseek.js";
 import { parseContextLlm } from "../src/core/llm/contextParser.js";
 import { parseSongFeedbackLlm } from "../src/core/llm/songFeedback.js";
 import { parseContextAuto, parseSongFeedbackAuto } from "../src/core/llm/auto.js";
+import { prelabelTracks } from "../src/core/llm/prelabel.js";
 import { createApp, seedSampleIfFirstRun } from "../src/server/app.js";
 import { MemoryStore } from "../src/storage/jsonStore.js";
+import type { Track } from "../src/core/types.js";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -135,6 +137,75 @@ describe("LLM 歌曲特征解析", () => {
     expect(await parseSongFeedbackLlm("x", CONFIG, mockFetch({ understood: false }))).toBeNull();
     const auto = await parseSongFeedbackAuto("x", { ...CONFIG, fetchImpl: mockFetch({ understood: false }) });
     expect(auto.parsedBy).toBe("rules");
+  });
+});
+
+describe("LLM 批量预标注", () => {
+  const unlabeled: Track[] = [
+    { id: "a", title: "晴天", artist: "周杰伦", durationSec: 269, genres: ["pop"] },
+    { id: "b", title: "Numb", artist: "Linkin Park", durationSec: 187, genres: ["rock"] },
+  ];
+
+  it("校验并应用标签：energy clamp、情绪白名单、vocalDensity 枚举", async () => {
+    const result = await prelabelTracks(
+      unlabeled,
+      CONFIG,
+      mockFetch({
+        labels: [
+          { id: "a", energy: 0.55, moodTags: ["warm", "epic", "自造词"], vocalDensity: "medium" },
+          { id: "b", energy: 5, moodTags: ["uplifting"] }, // energy 越界 → clamp 到 1
+        ],
+      }),
+    );
+    expect(result?.labeled).toEqual(["a", "b"]);
+    expect(result?.changes[0]?.apply).toEqual({ energy: 0.55, moodTags: ["warm"], vocalDensity: "medium" });
+    expect(result?.changes[1]?.apply.energy).toBe(1);
+    expect(result?.skipped).toBe(0);
+  });
+
+  it("LLM 漏掉的歌记为 skipped，全空输出记 null 触发上层回退", async () => {
+    const partial = await prelabelTracks(unlabeled, CONFIG, mockFetch({ labels: [{ id: "a", energy: 0.4 }] }));
+    expect(partial?.labeled).toEqual(["a"]);
+    expect(partial?.skipped).toBe(1);
+    expect(await prelabelTracks(unlabeled, CONFIG, mockFetch({ labels: [] }))).toEqual({
+      labeled: [],
+      changes: [],
+      skipped: 2,
+    });
+    expect(await prelabelTracks(unlabeled, CONFIG, mockFetch("bad", 500))).toBeNull();
+  });
+
+  it("API：预标注写入曲库并留痕 learnEvents；未配置 LLM 返回 400", async () => {
+    const store = new MemoryStore();
+    await store.saveTracks([
+      { id: "a", title: "晴天", artist: "周杰伦", durationSec: 269 },
+      { id: "b", title: "已标注", artist: "X", durationSec: 100, energy: 0.5 },
+    ]);
+    const app = createApp({
+      store,
+      llm: { ...CONFIG, fetchImpl: mockFetch({ labels: [{ id: "a", energy: 0.45, moodTags: ["warm"] }] }) },
+    });
+    const res = await app.request("/api/library/prelabel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackIds: ["a", "b"] }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { labeled: string[] };
+    expect(data.labeled).toEqual(["a"]);
+    const tracks = await store.loadTracks();
+    expect(tracks.find((t) => t.id === "a")?.energy).toBe(0.45);
+    expect(tracks.find((t) => t.id === "a")?.moodTags).toEqual(["warm"]);
+    expect(tracks.find((t) => t.id === "b")?.energy).toBe(0.5); // 已标注的不动
+    expect((await store.loadLearnEvents()).filter((e) => e.trackId === "a").length).toBe(1);
+    // 未配置 LLM
+    const bare = createApp({ store: new MemoryStore() });
+    const res2 = await bare.request("/api/library/prelabel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackIds: ["a"] }),
+    });
+    expect(res2.status).toBe(400);
   });
 });
 
