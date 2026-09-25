@@ -84,8 +84,7 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
     const results: ParsedAudio[] = [];
     for (const file of files) {
       try {
-        // path 提示帮助解析器按扩展名选择格式（某些浏览器 File.type 为空）
-        const meta = await parseBlob(file, { duration: true, path: file.name });
+        const meta = await parseBlob(file, { duration: true });
         const tags: AudioTags = {
           title: meta.common.title,
           artist: meta.common.artist,
@@ -99,8 +98,8 @@ export function LibraryView({ onChanged }: { onChanged: () => void }): React.Rea
         const detail = (err as Error).message;
         results.push({
           fileName: file.name,
-          ...fallback,
-          ...(fallback.reason !== undefined ? { reason: `${fallback.reason}（解析器：${detail}）` } : {}),
+          track: fallback.track,
+          reason: fallback.reason !== undefined ? `${fallback.reason}（解析器：${detail}）` : undefined,
         });
       }
     }

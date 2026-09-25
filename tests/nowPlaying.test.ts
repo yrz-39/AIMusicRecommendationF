@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseMediaSessions,
+  parseProcessWindow,
   parseWindowTitle,
   pickPlayingSession,
   sourceFromAppId,
@@ -31,6 +32,39 @@ describe("parseWindowTitle", () => {
   it("无关窗口返回 null", () => {
     expect(parseWindowTitle("文档1 - Word")).toBeNull();
     expect(parseWindowTitle("")).toBeNull();
+  });
+});
+
+describe("parseProcessWindow（按进程识别，覆盖新版客户端）", () => {
+  it("新版网易云标题无客户端后缀：cloudmusic 进程 + 『歌名 - 歌手』", () => {
+    const r = parseProcessWindow("cloudmusic", "辞九门回忆 - 邓寓君（等什么君）");
+    expect(r?.playing).toBe(true);
+    expect(r?.title).toBe("辞九门回忆");
+    expect(r?.artist).toBe("邓寓君（等什么君）");
+    expect(r?.source).toBe("netease");
+  });
+
+  it("旧版带客户端后缀的标题仍可解析", () => {
+    const r = parseProcessWindow("cloudmusic", "晴天 - 周杰伦 - 网易云音乐");
+    expect(r?.title).toBe("晴天");
+    expect(r?.artist).toBe("周杰伦");
+  });
+
+  it("客户端主界面默认标题不算播放", () => {
+    expect(parseProcessWindow("cloudmusic", "网易云音乐")).toBeNull();
+    expect(parseProcessWindow("CloudMusic", "网易云音乐 -")).toBeNull();
+    expect(parseProcessWindow("qqmusic", "QQ音乐")).toBeNull();
+  });
+
+  it("非音乐客户端进程返回 null", () => {
+    expect(parseProcessWindow("chrome", "辞九门回忆 - 邓寓君")).toBeNull();
+    expect(parseProcessWindow("", "任意")).toBeNull();
+  });
+
+  it("QQ 音乐按进程识别", () => {
+    const r = parseProcessWindow("QQMusic", "晴天 - 周杰伦");
+    expect(r?.source).toBe("qq");
+    expect(r?.title).toBe("晴天");
   });
 });
 

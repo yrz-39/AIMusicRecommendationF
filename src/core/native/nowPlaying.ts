@@ -109,6 +109,39 @@ export function parseWindowTitle(raw: string): NowPlaying | null {
   };
 }
 
+/**
+ * 新版客户端主窗口标题不再带「网易云音乐」后缀（如「歌名 - 歌手」），
+ * 托盘最小化时窗口仍在（隐藏但标题可读）。因此按所属进程识别来源，
+ * 客户端进程的任何非默认标题都视为播放信息。
+ */
+export function parseProcessWindow(processName: string, title: string): NowPlaying | null {
+  const proc = processName.toLowerCase();
+  const known = SOURCE_MARKERS.find(
+    (m) =>
+      (m.source === "netease" && /cloudmusic|netease/i.test(proc)) ||
+      (m.source === "qq" && /qqmusic|tencent.*music/i.test(proc)),
+  );
+  if (known === undefined) return null;
+
+  // 客户端自己的通用标题（未在播放/主界面）不当作歌名
+  if (/^(网易云音乐|CloudMusic|QQ音乐)\s*[-—|]?\s*$/.test(title.trim())) return null;
+  const byMarker = parseWindowTitle(title);
+  if (byMarker !== null) return byMarker;
+
+  const parts = title.trim().split(/\s+-\s+|\s+—\s+/).map((p) => p.trim()).filter((p) => p !== "");
+  if (parts.length === 0) return null;
+  const first = parts[0];
+  if (first === undefined || first === "") return null;
+  return {
+    playing: true,
+    title: first,
+    artist: parts[1],
+    source: known.source,
+    rawTitle: title,
+    via: "window-title",
+  };
+}
+
 function runPowerShell(script: string, timeoutMs: number): Promise<string> {
   return new Promise((resolve) => {
     // EncodedCommand 规避引号/反引号转义问题；脚本内部自行把输出流切到 UTF-8
@@ -159,13 +192,13 @@ async function detectViaMediaSession(): Promise<NowPlaying | null> {
   };
 }
 
-function listWindowTitles(): Promise<string[]> {
+function listProcessWindows(): Promise<Array<{ process: string; title: string }>> {
   return new Promise((resolve) => {
     // 中文 Windows 上 PowerShell 默认按 GBK 输出，Node 按 UTF-8 解码会全部乱码，
     // 必须先显式切换输出流编码（实测缺失时永远检测不到窗口标题）。
     const script =
       "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
-      "Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | ForEach-Object { $_.MainWindowTitle }";
+      "Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | ForEach-Object { \"$($_.ProcessName)|$($_.MainWindowTitle)\" }";
     execFile(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
@@ -175,7 +208,18 @@ function listWindowTitles(): Promise<string[]> {
           resolve([]);
           return;
         }
-        resolve(stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== ""));
+        resolve(
+          stdout
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter((l) => l !== "")
+            .map((line) => {
+              const sep = line.indexOf("|");
+              return sep > 0
+                ? { process: line.slice(0, sep), title: line.slice(sep + 1) }
+                : { process: "", title: line };
+            }),
+        );
       },
     );
   });
@@ -188,9 +232,9 @@ export async function detectNowPlaying(): Promise<NowPlaying> {
   } catch {
     /* SMTC 不可用时回落窗口标题 */
   }
-  const titles = await listWindowTitles();
-  for (const title of titles) {
-    const parsed = parseWindowTitle(title);
+  const windows = await listProcessWindows();
+  for (const w of windows) {
+    const parsed = parseProcessWindow(w.process, w.title);
     if (parsed !== null) return parsed;
   }
   return { playing: false };
