@@ -8,6 +8,7 @@ import { parseContextLlm } from "../src/core/llm/contextParser.js";
 import { parseSongFeedbackLlm } from "../src/core/llm/songFeedback.js";
 import { parseContextAuto, parseSongFeedbackAuto } from "../src/core/llm/auto.js";
 import { prelabelTracks } from "../src/core/llm/prelabel.js";
+import { extractPlaylistId, fetchNeteasePlaylist } from "../src/core/import/netease.js";
 import { createApp, seedSampleIfFirstRun } from "../src/server/app.js";
 import { MemoryStore } from "../src/storage/jsonStore.js";
 import type { Track } from "../src/core/types.js";
@@ -206,6 +207,63 @@ describe("LLM 批量预标注", () => {
       body: JSON.stringify({ trackIds: ["a"] }),
     });
     expect(res2.status).toBe(400);
+  });
+});
+
+describe("网易云歌单导入", () => {
+  const playlistJson = JSON.stringify({
+    result: {
+      name: "我的学习歌单",
+      trackCount: 2,
+      tracks: [
+        { id: 111, name: "晴天", duration: 269000, artists: [{ name: "周杰伦" }], album: { name: "叶惠美" } },
+        { id: 222, name: "Numb", duration: 187000, artists: [{ name: "Linkin Park" }] },
+      ],
+    },
+  });
+
+  it("extractPlaylistId 支持长链、短链文本、纯 id", () => {
+    expect(extractPlaylistId("https://music.163.com/playlist?id=3778678&userid=1")).toBe("3778678");
+    expect(extractPlaylistId("【歌单】xxx：https://163cn.tv/abc/share  复制此链接")).toBeNull(); // 短链交给 fetch 跳转
+    expect(extractPlaylistId("3778678")).toBe("3778678");
+    expect(extractPlaylistId("随便说的话")).toBeNull();
+  });
+
+  it("抓取并映射曲目（含合作歌手、时长秒换算）", async () => {
+    const playlist = await fetchNeteasePlaylist("https://music.163.com/playlist?id=42", (async (url: RequestInfo | URL) => {
+      return new Response(String(url).includes("playlist/detail") ? playlistJson : '{"songs":[]}', { status: 200 });
+    }) as typeof fetch);
+    expect(playlist.name).toBe("我的学习歌单");
+    expect(playlist.tracks).toHaveLength(2);
+    expect(playlist.tracks[0]).toMatchObject({
+      id: "ne-111",
+      title: "晴天",
+      artist: "周杰伦",
+      album: "叶惠美",
+      durationSec: 269,
+    });
+    expect(playlist.tracks[1]?.artist).toBe("Linkin Park");
+  });
+
+  it("API：无效链接/空输入返回明确错误（不访问外网）", async () => {
+    const store = new MemoryStore();
+    await seedSampleIfFirstRun(store);
+    const app = createApp({ store });
+
+    const bad = await app.request("/api/library/import-netease", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: "不是链接" }),
+    });
+    expect(bad.status).toBe(502);
+    expect(((await bad.json()) as { error: string }).error).toContain("无法识别歌单链接");
+
+    const empty = await app.request("/api/library/import-netease", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(empty.status).toBe(400);
   });
 });
 

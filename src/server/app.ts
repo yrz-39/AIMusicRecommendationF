@@ -7,6 +7,7 @@ import { buildPlaylist } from "../core/recommend/playlist.js";
 import { applyFeatureDelta } from "../core/learn/featureLearner.js";
 import { prelabelTracks } from "../core/llm/prelabel.js";
 import { normalizeGenres } from "../core/import/genreMap.js";
+import { fetchNeteasePlaylist } from "../core/import/netease.js";
 import { detectNowPlaying } from "../core/native/nowPlaying.js";
 import { validateImportRows } from "../core/import/validate.js";
 import { importCsv } from "../core/import/csv.js";
@@ -270,6 +271,47 @@ export function createApp({ store, now = () => new Date(), appVersion, dataDir, 
   });
 
   app.get("/api/now-playing", async (c) => c.json(await detectNowPlaying()));
+
+  /**
+   * 网易云公开歌单一键导入：只读匿名接口获取歌名/歌手/专辑/时长，
+   * 与现有曲库去重后入库。特征（能量/情绪）随后由前端触发 LLM 预标注。
+   */
+  app.post("/api/library/import-netease", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体必须是 JSON" }, 400);
+    }
+    const input = (body as { input?: unknown } | null)?.input;
+    if (typeof input !== "string" || input.trim() === "") {
+      return c.json({ error: "请粘贴网易云歌单的分享链接或 id" }, 400);
+    }
+
+    let playlist;
+    try {
+      playlist = await fetchNeteasePlaylist(input);
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 502);
+    }
+
+    const existing = await store.loadTracks();
+    const existingIds = new Set(existing.map((t) => t.id));
+    //网易云条目 id 与本地库必然不同，需按「歌名|歌手」识别同一首歌，避免整单导入造成重复
+    const keyOf = (t: { title: string; artist: string }) =>
+      `${t.title.trim().toLowerCase()}|${t.artist.trim().toLowerCase()}`;
+    const existingKeys = new Set(existing.map(keyOf));
+    const accepted = playlist.tracks.filter((t) => !existingIds.has(t.id) && !existingKeys.has(keyOf(t)));
+    if (accepted.length > 0) {
+      await store.saveTracks([...existing, ...accepted]);
+    }
+    return c.json({
+      playlistName: playlist.name,
+      imported: accepted.length,
+      duplicates: playlist.tracks.length - accepted.length,
+      ids: accepted.map((t) => t.id),
+    });
+  });
 
   app.post("/api/playlist", async (c) => {
     let body: unknown;

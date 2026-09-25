@@ -5,7 +5,7 @@ import { assembleTrack, type AudioTags } from "../../core/import/audio.js";
 import { normalizeGenres } from "../../core/import/genreMap.js";
 import { energyLabel, formatDuration } from "../App.js";
 
-type ImportFormat = "json" | "csv" | "audio";
+type ImportFormat = "json" | "csv" | "audio" | "netease";
 
 interface ParsedAudio {
   fileName: string;
@@ -78,6 +78,44 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
     },
     [load, onChanged],
   );
+
+  // ---------- 网易云歌单导入 ----------
+  const [neteaseInput, setNeteaseInput] = useState("");
+  const [neteaseBusy, setNeteaseBusy] = useState(false);
+  const [neteaseMsg, setNeteaseMsg] = useState<string | null>(null);
+
+  const importNetease = useCallback(async (): Promise<void> => {
+    if (neteaseInput.trim() === "") {
+      setNeteaseMsg("先粘贴歌单链接或 id");
+      return;
+    }
+    setNeteaseMsg(null);
+    setNeteaseBusy(true);
+    try {
+      const res = await fetch("/api/library/import-netease", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: neteaseInput }),
+      });
+      const data = (await res.json()) as {
+        playlistName: string;
+        imported: number;
+        duplicates: number;
+        ids: string[];
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error ?? "导入失败");
+      setNeteaseInput("");
+      await load();
+      onChanged();
+      setNeteaseMsg(`歌单「${data.playlistName}」导入 ${data.imported} 首` + (data.duplicates > 0 ? `，${data.duplicates} 首已在曲库` : ""));
+      if (data.ids.length > 0) await runPrelabel(data.ids);
+    } catch (err) {
+      setNeteaseMsg(`导入失败：${(err as Error).message}`);
+    } finally {
+      setNeteaseBusy(false);
+    }
+  }, [neteaseInput, load, onChanged, runPrelabel]);
 
   /** 一键补全曲库中所有缺失特征的歌（按当前列表实时计算） */
   const prelabelMissing = useCallback((): void => {
@@ -305,7 +343,10 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
           <button className={format === "json" ? "tab active" : "tab"} onClick={() => setFormat("json")}>
             JSON
           </button>
-          {format !== "audio" && (
+          <button className={format === "netease" ? "tab active" : "tab"} onClick={() => setFormat("netease")}>
+            网易云歌单
+          </button>
+          {format !== "audio" && format !== "netease" && (
             <>
               <button className="ghost-btn" style={{ padding: "5px 12px" }} onClick={() => fileInputRef.current?.click()}>
                 选择文件…
@@ -325,7 +366,45 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
           )}
         </div>
 
-        {format === "audio" ? (
+        {format === "netease" ? (
+          <div className="audio-import">
+            <p className="audio-hint">
+              在网易云 App 里打开你想导入的歌单 → 点「分享」→「复制链接」，粘贴到这里。
+              会读取歌单里每首歌的<b>歌名、歌手、专辑、时长</b>（仅公开歌单；私密歌单读不了）。
+              能量/情绪等听感特征随后由 AI 自动推断填充。
+            </p>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <input
+                type="text"
+                style={{
+                  flex: 1,
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  padding: "8px 12px",
+                  fontSize: 13.5,
+                  fontFamily: "inherit",
+                  background: "var(--card)",
+                  color: "var(--text)",
+                }}
+                value={neteaseInput}
+                onChange={(e) => setNeteaseInput(e.target.value)}
+                placeholder="https://music.163.com/playlist?id=3778678 或分享口令全文"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !neteaseBusy) void importNetease();
+                }}
+              />
+              <button
+                className="primary-btn"
+                style={{ marginTop: 0, width: "auto", padding: "8px 20px" }}
+                disabled={neteaseBusy}
+                onClick={() => void importNetease()}
+              >
+                {neteaseBusy ? "正在获取歌单…" : "获取并导入"}
+              </button>
+            </div>
+            {neteaseMsg !== null && <div style={{ marginTop: 10, fontSize: 13.5, color: "var(--text-dim)" }}>{neteaseMsg}</div>}
+          </div>
+        ) : format === "audio" ? (
           <div className="audio-import">
             <p className="audio-hint">
               选择你电脑里的音乐文件（支持多选，mp3 / flac / m4a / ogg…），歌名、歌手、时长会自动从文件标签读取；
