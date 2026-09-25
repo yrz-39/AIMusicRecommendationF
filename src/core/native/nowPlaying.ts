@@ -1,14 +1,15 @@
 import { execFile } from "node:child_process";
 
 /**
- * 正在播放检测（零凭据原型）。
+ * 正在播放检测（零凭据）。
  *
- * 原理：网易云/QQ 音乐桌面客户端播放时，主窗口标题会变成
- * "歌名 - 歌手 - 网易云音乐" / "歌名 - 歌手 - QQ音乐"。
- * 通过 PowerShell 枚举可见窗口标题并解析。
+ * 优先走 Windows 系统媒体会话（SMTC, GlobalSystemMediaTransportControls）：
+ * 这是操作系统的"正在播放"官方通道，桌面客户端最小化到托盘、
+ * 网易云/QQ 音乐网页版、其他播放器（Spotify 等）都能覆盖。
  *
- * 这是实验性模块：失败一律优雅降级为 { playing: false }，
- * 绝不让主流程崩溃。Electron 阶段可换原生 API 获得更稳的信号。
+ * 兜底走窗口标题解析："歌名 - 歌手 - 网易云音乐"（覆盖 SMTC 不可用的场景）。
+ *
+ * 失败一律优雅降级为 { playing: false }，绝不让主流程崩溃。
  */
 
 export interface NowPlaying {
@@ -17,6 +18,10 @@ export interface NowPlaying {
   artist?: string;
   source?: "netease" | "qq" | "unknown";
   rawTitle?: string;
+  /** SMTC 会话来源应用（AUMID），如 "Netease.CloudMusicMusic_daewk...";  */
+  sourceApp?: string;
+  /** 检测通道 */
+  via?: "media-session" | "window-title";
 }
 
 /** 客户端窗口标题的尾部标记 → 来源 */
@@ -26,6 +31,54 @@ const SOURCE_MARKERS: Array<{ marker: string; source: NonNullable<NowPlaying["so
   { marker: "QQ音乐", source: "qq" },
   { marker: "QQMusic", source: "qq" },
 ];
+
+/** SMTC 会话的 AUMID → 来源（不认识的播放器归为 unknown，仍然可用） */
+export function sourceFromAppId(appId?: string): NonNullable<NowPlaying["source"]> {
+  const id = appId ?? "";
+  if (/cloudmusic|netease/i.test(id)) return "netease";
+  if (/qqmusic|tencent.*music/i.test(id)) return "qq";
+  return "unknown";
+}
+
+/** 解析 SMTC PowerShell 脚本的 JSON 输出（容忍 PS 5.1 单元素数组 unwrap 与空输出） */
+export interface MediaSessionInfo {
+  title: string;
+  artist?: string;
+  status: string;
+  sourceApp?: string;
+}
+
+export function parseMediaSessions(raw: string): MediaSessionInfo[] {
+  const text = raw.trim();
+  if (text === "") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const arr = Array.isArray(parsed) ? parsed : parsed !== null && typeof parsed === "object" ? [parsed] : [];
+  const out: MediaSessionInfo[] = [];
+  for (const item of arr) {
+    const s = item as { title?: unknown; artist?: unknown; status?: unknown; sourceApp?: unknown };
+    if (typeof s.title !== "string" || s.title.trim() === "") continue;
+    if (typeof s.status !== "string") continue;
+    out.push({
+      title: s.title.trim(),
+      artist: typeof s.artist === "string" && s.artist.trim() !== "" ? s.artist.trim() : undefined,
+      status: s.status,
+      sourceApp: typeof s.sourceApp === "string" && s.sourceApp !== "" ? s.sourceApp : undefined,
+    });
+  }
+  return out;
+}
+
+/** 从媒体会话中选出正在播放、且带有效曲目信息的会话 */
+export function pickPlayingSession(sessions: MediaSessionInfo[]): MediaSessionInfo | null {
+  return (
+    sessions.find((s) => s.status === "Playing" && !/^(未在播放|正在播放)$/.test(s.title)) ?? null
+  );
+}
 
 export function parseWindowTitle(raw: string): NowPlaying | null {
   const text = raw.trim();
@@ -52,6 +105,57 @@ export function parseWindowTitle(raw: string): NowPlaying | null {
     artist: parts[1],
     source,
     rawTitle: text,
+    via: "window-title",
+  };
+}
+
+function runPowerShell(script: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve) => {
+    // EncodedCommand 规避引号/反引号转义问题；脚本内部自行把输出流切到 UTF-8
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+      { timeout: timeoutMs, windowsHide: true, encoding: "utf8", maxBuffer: 1024 * 1024 },
+      (err, stdout) => {
+        resolve(err !== null || stdout === undefined ? "" : String(stdout));
+      },
+    );
+  });
+}
+
+/** 系统媒体会话（SMTC）：覆盖托盘化客户端与网页版播放 */
+async function detectViaMediaSession(): Promise<NowPlaying | null> {
+  const script = [
+    "try {",
+    "  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+    "  Add-Type -AssemblyName System.Runtime.WindowsRuntime",
+    "  $null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]",
+    "  $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]",
+    "  function Await($op, $t) { $m = $asTask.MakeGenericMethod($t); $task = $m.Invoke($null, @($op)); $task.Wait(-1) | Out-Null; $task.Result }",
+    "  $mgr = Await ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])",
+    "  $out = @()",
+    "  foreach ($s in $mgr.GetSessions()) {",
+    "    try {",
+    "      $props = Await ($s.TryGetTextPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionTextProperties])",
+    "      $pb = $s.GetPlaybackInfo()",
+    "      $out += [pscustomobject]@{ title = [string]$props.Title; artist = [string]$props.Artist; status = [string]$pb.PlaybackStatus; sourceApp = [string]$s.SourceAppUserModelId }",
+    "    } catch {}",
+    "  }",
+    "  ConvertTo-Json -InputObject @($out) -Compress",
+    "} catch { Write-Output '[]' }",
+  ].join("\n");
+  const raw = await runPowerShell(script, 6000);
+  const session = pickPlayingSession(parseMediaSessions(raw));
+  if (session === null) return null;
+  return {
+    playing: true,
+    title: session.title,
+    artist: session.artist,
+    source: sourceFromAppId(session.sourceApp),
+    rawTitle: [session.title, session.artist].filter(Boolean).join(" - "),
+    sourceApp: session.sourceApp,
+    via: "media-session",
   };
 }
 
@@ -78,6 +182,12 @@ function listWindowTitles(): Promise<string[]> {
 }
 
 export async function detectNowPlaying(): Promise<NowPlaying> {
+  try {
+    const viaSession = await detectViaMediaSession();
+    if (viaSession !== null) return viaSession;
+  } catch {
+    /* SMTC 不可用时回落窗口标题 */
+  }
   const titles = await listWindowTitles();
   for (const title of titles) {
     const parsed = parseWindowTitle(title);
