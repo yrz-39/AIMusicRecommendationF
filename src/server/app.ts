@@ -409,10 +409,12 @@ export function createApp({
       pool.find((s) => artistOverlap(s) && durationClose(s));
     if (song === undefined) {
       if (copyrightHit !== undefined) {
-        throw new Error(`《${copyrightHit.title}》在网易云侧当前不可播放（无版权/仅 VIP）`);
+        throw new Error(
+          `《${copyrightHit.title}》开放平台通道暂不可播（VIP/版权限制）：客户端里能听，但 Windows 暂不支持程序唤起客户端（官方仅 macOS）`,
+        );
       }
       if (pool.length === 0 && unplayableCount > 0) {
-        throw new Error(`搜到 ${unplayableCount} 首但均不可播放（无版权/仅 VIP），网易云侧放不了这首`);
+        throw new Error(`搜到 ${unplayableCount} 首但开放平台通道均不可播（VIP/版权限制），mpv 播放器放不了这首`);
       }
       throw new Error(
         pool.length === 0
