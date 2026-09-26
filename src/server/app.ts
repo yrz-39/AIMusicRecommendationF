@@ -559,13 +559,20 @@ export function createApp({
       // mpv 标题形如 "歌名 - 歌手"；按第一个 " - " 拆分供曲库匹配
       const title = typeof st.title === "string" ? st.title : undefined;
       const sep = title !== undefined ? title.indexOf(" - ") : -1;
+      const npTitle = title !== undefined && sep > 0 ? title.slice(0, sep).trim() : title;
+      const npArtist = title !== undefined && sep > 0 ? title.slice(sep + 3).trim() : undefined;
+      const track =
+        s.playing && npTitle !== undefined && npTitle !== ""
+          ? matchPlayingTrack(await store.loadTracks(), { title: npTitle, artist: npArtist })
+          : null;
       return c.json({
         available: true,
         status: s.status,
         playing: s.playing,
-        title: title !== undefined && sep > 0 ? title.slice(0, sep).trim() : title,
-        artist: title !== undefined && sep > 0 ? title.slice(sep + 3).trim() : undefined,
+        title: npTitle,
+        artist: npArtist,
         queueLength: typeof st.queueLength === "number" ? st.queueLength : 0,
+        track: track ?? null,
       });
     } catch (err) {
       return c.json({ available: true, status: "unknown", playing: false, error: (err as Error).message });
@@ -1021,45 +1028,13 @@ export function createApp({
    *  Windows 版网易云客户端不支持官方唤起，歌单交付走 ncm 内置播放器，
    *  「教它/基于这首歌推荐/遥控」必须能感知它。paused 且队列非空也返回（条不消失才能恢复播放） */
   app.get("/api/now-playing/current", async (c) => {
-    // 交付会话（ncm 播放器有活跃队列）优先接管播放条：此时 UI 显示/声音/遥控必须同源。
-    // 用户停止队列（queueLength 归零）后自动交还桌面检测（网易云客户端手动听歌场景）。
-    if (ncm !== null) {
-      try {
-        const s = await ncm.state();
-        const raw = (s.raw ?? {}) as { state?: { title?: unknown; queueLength?: unknown } };
-        const st = raw.state ?? {};
-        const title = typeof st.title === "string" ? st.title.trim() : "";
-        const queueLength = typeof st.queueLength === "number" ? st.queueLength : 0;
-        if (s.playing || (queueLength > 0 && title !== "")) {
-          const sep = title.indexOf(" - ");
-          const npTitle = sep > 0 ? title.slice(0, sep).trim() : title;
-          const npArtist = sep > 0 ? title.slice(sep + 3).trim() : undefined;
-          const tracks = await store.loadTracks();
-          const track =
-            npTitle === ""
-              ? null
-              : matchPlayingTrack(tracks, { title: npTitle, artist: npArtist });
-          return c.json({
-            playing: s.playing,
-            title: npTitle,
-            artist: npArtist,
-            source: "ncm",
-            via: "ncm-player",
-            ncmQueue: { queueLength },
-            track: track ?? null,
-          });
-        }
-      } catch {
-        /* ncm 状态查询失败 → 落回桌面检测 */
-      }
-    }
+    // 桌面检测专用（网易云/QQ 客户端、SMTC）。ncm 播放器的状态由 /api/netease/state
+    // 单独提供——UI 端双播放条各自渲染，互不抢占。
     const playing = await detectPlaying();
-    if (playing.playing) {
-      const tracks = await store.loadTracks();
-      const track = matchPlayingTrack(tracks, playing);
-      return c.json({ ...playing, track: track ?? null });
-    }
-    return c.json({ playing: false });
+    if (!playing.playing) return c.json({ playing: false });
+    const tracks = await store.loadTracks();
+    const track = matchPlayingTrack(tracks, playing);
+    return c.json({ ...playing, track: track ?? null });
   });
 
   /** 基于正在播放/指定曲目的"找相似"推荐：曲目特征直接构造情境 */

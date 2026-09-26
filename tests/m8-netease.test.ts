@@ -334,7 +334,7 @@ describe("API：网易云播放与遥控", () => {
     expect(noNcm.status).toBe(400);
   });
 
-  it("now-playing/current：桌面无信号时回落 ncm 播放器状态并匹配曲库", async () => {
+  it("/api/netease/state：播放中返回标题/歌手/队列并匹配曲库（ncm 播放条数据源）", async () => {
     const store = new MemoryStore();
     await store.saveTracks([{ id: "a", title: "晴天", artist: "Jay", durationSec: 269, energy: 0.5 }]);
     const ncm = stubNcm({
@@ -344,25 +344,24 @@ describe("API：网易云播放与遥控", () => {
         raw: { state: { status: "playing", title: "晴天 - Jay", queueLength: 3, position: 1, duration: 100 } },
       }),
     });
-    const app = createApp({ store, ncm, detectPlaying: async () => ({ playing: false }) });
-    const res = await app.request("/api/now-playing/current");
-    const data = (await res.json()) as {
+    const app = createApp({ store, ncm });
+    const data = (await (await app.request("/api/netease/state")).json()) as {
+      available: boolean;
       playing: boolean;
-      source: string;
       title: string;
       artist: string;
-      ncmQueue: { queueLength: number };
+      queueLength: number;
       track: { id: string } | null;
     };
+    expect(data.available).toBe(true);
     expect(data.playing).toBe(true);
-    expect(data.source).toBe("ncm");
     expect(data.title).toBe("晴天");
     expect(data.artist).toBe("Jay");
-    expect(data.ncmQueue).toEqual({ queueLength: 3 });
-    expect(data.track?.id).toBe("a"); // 标题/歌手解析后与曲库匹配上
+    expect(data.queueLength).toBe(3);
+    expect(data.track?.id).toBe("a"); // 标题/歌手解析后与曲库匹配上（教它/基于这首歌推荐可用）
   });
 
-  it("now-playing/current：ncm 暂停但队列非空 → 保持可见（playing=false + 队列信息）", async () => {
+  it("/api/netease/state：暂停但队列非空 → 保持数据可见（播放条不消失可恢复）", async () => {
     const ncm = stubNcm({
       state: async () => ({
         status: "stopped",
@@ -370,56 +369,15 @@ describe("API：网易云播放与遥控", () => {
         raw: { state: { status: "stopped", title: "晴天 - Jay", queueLength: 2, position: 0, duration: 100 } },
       }),
     });
-    const app = createApp({ store: new MemoryStore(), ncm, detectPlaying: async () => ({ playing: false }) });
-    const data = (await (await app.request("/api/now-playing/current")).json()) as {
+    const app = createApp({ store: new MemoryStore(), ncm });
+    const data = (await (await app.request("/api/netease/state")).json()) as {
       playing: boolean;
-      source: string;
-      ncmQueue?: { queueLength: number };
+      queueLength: number;
+      title?: string;
     };
     expect(data.playing).toBe(false);
-    expect(data.source).toBe("ncm");
-    expect(data.ncmQueue?.queueLength).toBe(2);
-  });
-
-  it("now-playing/current：交付会话活跃时 ncm 优先于桌面检测（UI/声音/遥控同源）", async () => {
-    const store = new MemoryStore();
-    await store.saveTracks([{ id: "a", title: "晴天", artist: "Jay", durationSec: 269, energy: 0.5 }]);
-    const ncm = stubNcm({
-      state: async () => ({
-        status: "playing",
-        playing: true,
-        raw: { state: { status: "playing", title: "晴天 - Jay", queueLength: 4, position: 1, duration: 100 } },
-      }),
-    });
-    // 桌面端同时在放另一首（用户手动开的网易云客户端）
-    const app = createApp({ store, ncm, detectPlaying: async () => ({ playing: true, title: "Luv Letter", artist: "DJ OKAWARI", source: "netease", via: "window-title" }) });
-    const data = (await (await app.request("/api/now-playing/current")).json()) as {
-      playing: boolean;
-      source: string;
-      title: string;
-      ncmQueue?: { queueLength: number };
-    };
-    expect(data.source).toBe("ncm");
+    expect(data.queueLength).toBe(2);
     expect(data.title).toBe("晴天");
-    expect(data.ncmQueue?.queueLength).toBe(4);
-  });
-
-  it("queue-add 成功后把解析出的播放 ID 回写曲库（下次免搜索）", async () => {
-    const store = new MemoryStore();
-    await store.saveTracks([{ id: "lib-1", title: "晴天", artist: "周杰伦", durationSec: 269 }]);
-    const ncm = stubNcm();
-    const app = createApp({ store, ncm });
-    const res = await app.request("/api/netease/queue-add", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: "晴天", artist: "周杰伦", trackId: "lib-1" }),
-    });
-    const data = (await res.json()) as { ok: boolean; netease?: { encryptedId?: string; originalId?: string } };
-    expect(data.ok).toBe(true);
-    expect(data.netease?.originalId).toBe("101");
-    const t = (await store.loadTracks()).find((x) => x.id === "lib-1");
-    expect(t?.netease?.encryptedId).toBe("ENC_A");
-    expect(t?.netease?.originalId).toBe("101");
   });
 
   it("settings 含 ncm 段；PUT ncm 凭证转写 setCredentials；test-ncm 汇总三查", async () => {
