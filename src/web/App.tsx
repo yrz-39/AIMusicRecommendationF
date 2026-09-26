@@ -6,6 +6,7 @@ import { LibraryView } from "./components/LibraryView.js";
 import { HistoryView } from "./components/HistoryView.js";
 import { Onboarding, hasOnboarded, markOnboarded } from "./components/Onboarding.js";
 import { HelpModal } from "./components/HelpModal.js";
+import { SettingsModal } from "./components/SettingsModal.js";
 import { NowPlayingBar } from "./components/NowPlayingBar.js";
 import { isDesktopApp } from "./electronBridge.js";
 
@@ -60,6 +61,7 @@ export default function App(): React.ReactElement {
   const [appInfo, setAppInfo] = useState<{ version: string | null; dataDir: string | null; llmAvailable: boolean } | null>(null);
   const [showOnboarding, setShowOnboarding] = useState<boolean>(() => !hasOnboarded());
   const [showHelp, setShowHelp] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [basedOn, setBasedOn] = useState<Recommendation["track"] | null>(null);
   const desktop = isDesktopApp();
 
@@ -92,22 +94,19 @@ export default function App(): React.ReactElement {
     void refreshLibraryCount();
   }, [refreshLibraryCount]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async (): Promise<void> => {
-      try {
-        const res = await fetch("/api/health");
-        const data = (await res.json()) as { version: string | null; dataDir: string | null; llm?: boolean };
-        if (!cancelled)
-          setAppInfo({ version: data.version ?? null, dataDir: data.dataDir ?? null, llmAvailable: data.llm === true });
-      } catch {
-        /* health 拉不到时帮助页显示占位文案 */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+  const refreshHealth = useCallback(async (): Promise<void> => {
+    try {
+      const res = await fetch("/api/health");
+      const data = (await res.json()) as { version: string | null; dataDir: string | null; llm?: boolean };
+      setAppInfo({ version: data.version ?? null, dataDir: data.dataDir ?? null, llmAvailable: data.llm === true });
+    } catch {
+      /* health 拉不到时帮助页显示占位文案 */
+    }
   }, []);
+
+  useEffect(() => {
+    void refreshHealth();
+  }, [refreshHealth]);
 
   const requestRecommend = useCallback(
     async (overrides?: { excludeTrackIds?: string[]; sessionId?: string }): Promise<void> => {
@@ -240,6 +239,10 @@ export default function App(): React.ReactElement {
             音乐库 {libraryCount === null ? "…" : `${libraryCount} 首`}
           </a>
           {"  "}
+          <a onClick={() => setShowSettings(true)} title="LLM / 网易云 Cookie 配置">
+            ⚙ 设置
+          </a>
+          {"  "}
           <a onClick={() => setShowHelp(true)} title="帮助与隐私">
             ？帮助
           </a>
@@ -364,6 +367,9 @@ export default function App(): React.ReactElement {
           dataDir={appInfo?.dataDir ?? null}
           onClose={() => setShowHelp(false)}
         />
+      )}
+      {showSettings && (
+        <SettingsModal onClose={() => setShowSettings(false)} onSaved={() => void refreshHealth()} />
       )}
 
       <footer className="footer">

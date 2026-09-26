@@ -24,7 +24,15 @@ async function main(): Promise<void> {
     console.log("首次运行：已导入示例音乐库（导入真实库后会整体替换）");
   }
 
-  const app = createApp({ store, appVersion: APP_VERSION, dataDir: DATA_DIR, llm: LLM, neteaseCookie: NETEASE_COOKIE });
+  // Web 版设置页把凭据落回项目 .env（.gitignore 已排除，永不入库）
+  const app = createApp({
+    store,
+    appVersion: APP_VERSION,
+    dataDir: DATA_DIR,
+    llm: LLM,
+    neteaseCookie: NETEASE_COOKIE,
+    settingsPath: path.resolve(".env"),
+  });
 
   // 生产模式：存在构建产物时由 API 进程直接托管前端
   if (existsSync(WEB_DIST)) {

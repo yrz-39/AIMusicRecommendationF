@@ -7,13 +7,14 @@ import { buildPlaylist } from "../core/recommend/playlist.js";
 import { applyFeatureDelta } from "../core/learn/featureLearner.js";
 import { prelabelTracks } from "../core/llm/prelabel.js";
 import { normalizeGenres } from "../core/import/genreMap.js";
-import { fetchNeteasePlaylist } from "../core/import/netease.js";
+import { fetchNeteasePlaylist, testNeteaseCookie } from "../core/import/netease.js";
 import { detectNowPlaying } from "../core/native/nowPlaying.js";
 import { validateImportRows, songKey } from "../core/import/validate.js";
 import { importCsv } from "../core/import/csv.js";
 import { getSampleLibrary } from "../sample/sampleLibrary.js";
 import type { FeedbackEvent, FeedbackType, Recommendation, RecommendationSession, StudyContext } from "../core/types.js";
-import type { LlmConfig } from "../config/env.js";
+import { updateDotEnvFile, type LlmConfig } from "../config/env.js";
+import { testLlmConnection } from "../core/llm/deepseek.js";
 import { randomUUID } from "node:crypto";
 
 /**
@@ -35,10 +36,14 @@ export interface AppDeps {
   appVersion?: string;
   /** 数据目录绝对路径（帮助页展示，方便用户备份/迁移） */
   dataDir?: string;
-  /** LLM 配置（.env 注入）；null = 未配置，全部走规则解析 */
+  /** LLM 配置（.env 注入）；null = 未配置，全部走规则解析。设置页保存后热更新 */
   llm?: LlmConfig | null;
   /** 网易云登录态（MUSIC_U cookie 值，.env 注入）；可选，提供后歌单导入不受匿名 10 首截断 */
   neteaseCookie?: string;
+  /** 设置持久化文件（.env 格式）。缺省 = 不落盘（测试场景），设置只在本次进程内生效 */
+  settingsPath?: string;
+  /** 设置页连通性测试用 fetch（测试注入 mock）；生产走全局 fetch */
+  fetchImpl?: typeof fetch;
 }
 
 /** 首次运行且曲库为空时导入示例库（通过持久化 flag 保证只执行一次） */
@@ -62,6 +67,8 @@ export function createApp({
   dataDir,
   llm = null,
   neteaseCookie,
+  settingsPath,
+  fetchImpl,
 }: AppDeps): Hono {
   const app = new Hono();
 
@@ -70,13 +77,180 @@ export function createApp({
     return c.json({ error: err.message ?? "内部错误" }, 500);
   });
 
+  /**
+   * 运行时可变设置：llm / neteaseCookie 原为启动快照，设置页需要保存后立即生效，
+   * 因此端点统一读 settings.*，PUT /api/settings 原地更新并落盘 settingsPath。
+   */
+  const settings = {
+    llm: llm as LlmConfig | null,
+    neteaseCookie: neteaseCookie as string | undefined,
+  };
+
+  /** 凭据只回显掩码（截图/录屏也不泄露），完整值不返回给渲染层 */
+  const maskSecret = (v: string): string => {
+    const t = v.trim();
+    if (t === "") return "";
+    if (t.length <= 8) return `••••（${t.length} 字符）`;
+    return `${t.slice(0, 3)}••••${t.slice(-4)}`;
+  };
+
+  const settingsSnapshot = () => ({
+    llm: {
+      configured: settings.llm !== null,
+      baseUrl: settings.llm?.baseUrl ?? "https://api.deepseek.com",
+      model: settings.llm?.model ?? "deepseek-chat",
+      apiKeyMasked: settings.llm ? maskSecret(settings.llm.apiKey) : null,
+    },
+    netease: {
+      configured: (settings.neteaseCookie ?? "").trim() !== "",
+      cookieMasked: settings.neteaseCookie ? maskSecret(settings.neteaseCookie) : null,
+    },
+    settingsPath: settingsPath ?? null,
+  });
+
+  /** 应用运行时设置 + 同步进程环境变量 + 落盘（settingsPath 存在时）。传 null 清除对应项 */
+  const applySettings = (updates: {
+    llm?: { apiKey?: string; baseUrl?: string; model?: string };
+    neteaseCookie?: string | null;
+  }): void => {
+    if (updates.llm !== undefined) {
+      const { apiKey, baseUrl, model } = updates.llm;
+      if (apiKey !== undefined) {
+        if (apiKey.trim() === "") {
+          delete process.env.STUDYMOOD_LLM_API_KEY;
+          settings.llm = null;
+        } else {
+          process.env.STUDYMOOD_LLM_API_KEY = apiKey.trim();
+          settings.llm = {
+            apiKey: apiKey.trim(),
+            baseUrl: (baseUrl?.trim() || settings.llm?.baseUrl || "https://api.deepseek.com").replace(/\/+$/, ""),
+            model: model?.trim() || settings.llm?.model || "deepseek-chat",
+            ...(fetchImpl !== undefined ? { fetchImpl } : {}),
+          };
+        }
+      }
+      // 只改 baseUrl/model：在现有 key 基础上重建（key 未配置时改这两项没有意义，保留 null）
+      if (settings.llm !== null && (baseUrl !== undefined || model !== undefined)) {
+        settings.llm = {
+          ...settings.llm,
+          baseUrl: (baseUrl?.trim() || settings.llm.baseUrl).replace(/\/+$/, ""),
+          model: model?.trim() || settings.llm.model,
+          ...(fetchImpl !== undefined ? { fetchImpl } : {}),
+        };
+      }
+    }
+    if (updates.neteaseCookie !== undefined) {
+      const cookie = updates.neteaseCookie?.trim() ?? "";
+      if (cookie === "") {
+        delete process.env.STUDYMOOD_NETEASE_COOKIE;
+        settings.neteaseCookie = undefined;
+      } else {
+        process.env.STUDYMOOD_NETEASE_COOKIE = cookie;
+        settings.neteaseCookie = cookie;
+      }
+    }
+    if (settingsPath !== undefined) {
+      const fileUpdates: Record<string, string | null> = {};
+      if (updates.llm?.apiKey !== undefined)
+        fileUpdates.STUDYMOOD_LLM_API_KEY = updates.llm.apiKey.trim() === "" ? null : updates.llm.apiKey.trim();
+      if (updates.llm?.baseUrl !== undefined) fileUpdates.STUDYMOOD_LLM_BASE_URL = updates.llm.baseUrl.trim();
+      if (updates.llm?.model !== undefined) fileUpdates.STUDYMOOD_LLM_MODEL = updates.llm.model.trim();
+      if (updates.neteaseCookie !== undefined)
+        fileUpdates.STUDYMOOD_NETEASE_COOKIE =
+          updates.neteaseCookie === null || updates.neteaseCookie.trim() === "" ? null : updates.neteaseCookie.trim();
+      if (Object.keys(fileUpdates).length > 0) updateDotEnvFile(settingsPath, fileUpdates);
+    }
+  };
+
+  /** 设置页：当前配置状态（凭据只回掩码，完整值不出渲染层边界） */
+  app.get("/api/settings", (c) => c.json(settingsSnapshot()));
+
+  /** 保存设置：立即生效（热更新），同时写入 .env 以便重启后保留 */
+  app.put("/api/settings", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体必须是 JSON" }, 400);
+    }
+    const b = (body ?? {}) as {
+      llm?: { apiKey?: unknown; baseUrl?: unknown; model?: unknown };
+      neteaseCookie?: unknown;
+    };
+    const updates: Parameters<typeof applySettings>[0] = {};
+    if (b.llm !== undefined && b.llm !== null && typeof b.llm === "object") {
+      const llmUpdate: { apiKey?: string; baseUrl?: string; model?: string } = {};
+      if (b.llm.apiKey !== undefined) {
+        if (typeof b.llm.apiKey !== "string") return c.json({ error: "apiKey 必须是字符串" }, 400);
+        llmUpdate.apiKey = b.llm.apiKey;
+      }
+      if (b.llm.baseUrl !== undefined) {
+        if (typeof b.llm.baseUrl !== "string") return c.json({ error: "baseUrl 必须是字符串" }, 400);
+        llmUpdate.baseUrl = b.llm.baseUrl;
+      }
+      if (b.llm.model !== undefined) {
+        if (typeof b.llm.model !== "string") return c.json({ error: "model 必须是字符串" }, 400);
+        llmUpdate.model = b.llm.model;
+      }
+      if (Object.keys(llmUpdate).length > 0) updates.llm = llmUpdate;
+    }
+    if (b.neteaseCookie !== undefined) {
+      if (b.neteaseCookie !== null && typeof b.neteaseCookie !== "string") {
+        return c.json({ error: "neteaseCookie 必须是字符串或 null" }, 400);
+      }
+      updates.neteaseCookie = b.neteaseCookie as string | null;
+    }
+    if (updates.llm === undefined && updates.neteaseCookie === undefined) {
+      return c.json({ error: "没有要保存的设置" }, 400);
+    }
+    applySettings(updates);
+    return c.json(settingsSnapshot());
+  });
+
+  /** 设置页「测试连接」：默认测已保存配置，body 里可带未保存的候选值先测再存 */
+  app.post("/api/settings/test-llm", async (c) => {
+    let candidate: { apiKey?: string; baseUrl?: string; model?: string } = {};
+    try {
+      const body = (await c.req.json()) as { llm?: { apiKey?: unknown; baseUrl?: unknown; model?: unknown } } | null;
+      const l = body?.llm;
+      if (l !== undefined && l !== null && typeof l === "object") {
+        candidate = {
+          apiKey: typeof l.apiKey === "string" ? l.apiKey.trim() : undefined,
+          baseUrl: typeof l.baseUrl === "string" ? l.baseUrl.trim() : undefined,
+          model: typeof l.model === "string" ? l.model.trim() : undefined,
+        };
+      }
+    } catch {
+      /* 无 body：测已保存配置 */
+    }
+    const apiKey = candidate.apiKey || settings.llm?.apiKey;
+    if (apiKey === undefined || apiKey === "") return c.json({ ok: false, error: "尚未配置 API key" }, 400);
+    const baseUrl = (candidate.baseUrl || settings.llm?.baseUrl || "https://api.deepseek.com").replace(/\/+$/, "");
+    const model = candidate.model || settings.llm?.model || "deepseek-chat";
+    return c.json(await testLlmConnection({ apiKey, baseUrl, model, ...(fetchImpl !== undefined ? { fetchImpl } : {}) }));
+  });
+
+  /** 设置页「测试 Cookie」：验证 MUSIC_U 是否有效，返回登录昵称 */
+  app.post("/api/settings/test-netease", async (c) => {
+    let candidate: string | undefined;
+    try {
+      const body = (await c.req.json()) as { cookie?: unknown } | null;
+      if (typeof body?.cookie === "string" && body.cookie.trim() !== "") candidate = body.cookie.trim();
+    } catch {
+      /* 无 body：测已保存配置 */
+    }
+    const cookie = candidate ?? settings.neteaseCookie;
+    if (cookie === undefined || cookie.trim() === "") return c.json({ ok: false, error: "尚未配置 Cookie" }, 400);
+    return c.json(await testNeteaseCookie(cookie, fetchImpl));
+  });
+
   app.get("/api/health", (c) =>
     c.json({
       ok: true,
       time: now().toISOString(),
       version: appVersion ?? null,
       dataDir: dataDir ?? null,
-      llm: llm !== null,
+      llm: settings.llm !== null,
     }),
   );
 
@@ -92,7 +266,8 @@ export function createApp({
    * 每首的标注写入 learnEvents（parsedBy=llm），特征来源永远可追溯。
    */
   app.post("/api/library/prelabel", async (c) => {
-    if (llm === null) return c.json({ error: "未配置 LLM，无法自动标注" }, 400);
+    if (settings.llm === null) return c.json({ error: "未配置 LLM，无法自动标注" }, 400);
+    const llmNow = settings.llm;
     let body: unknown;
     try {
       body = await c.req.json();
@@ -110,7 +285,7 @@ export function createApp({
       .slice(0, 15);
     if (targets.length === 0) return c.json({ labeled: [], changes: [], skipped: 0 });
 
-    const result = await prelabelTracks(targets, llm);
+    const result = await prelabelTracks(targets, llmNow);
     if (result === null) return c.json({ error: "LLM 标注失败，请稍后重试" }, 502);
     if (result.labeled.length > 0) {
       const applyMap = new Map(result.changes.map((ch) => [ch.trackId, ch.apply] as const));
@@ -320,7 +495,7 @@ export function createApp({
 
     let playlist;
     try {
-      playlist = await fetchNeteasePlaylist(input, { cookie: neteaseCookie });
+      playlist = await fetchNeteasePlaylist(input, { cookie: settings.neteaseCookie });
     } catch (err) {
       return c.json({ error: (err as Error).message }, 502);
     }
@@ -355,7 +530,7 @@ export function createApp({
       return c.json({ error: "请描述你现在的状态" }, 400);
     }
 
-    const { context, parsedBy } = await parseContextAuto(input, llm);
+    const { context, parsedBy } = await parseContextAuto(input, settings.llm);
     const outcome = await runRecommend(context, { sessionId, limit: 60 });
     if ("error" in outcome) return c.json({ error: outcome.error }, 400);
     const playlist = buildPlaylist(outcome.recommendations, context.durationMinutes);
@@ -380,7 +555,7 @@ export function createApp({
     const track = tracks.find((t) => t.id === trackId);
     if (track === undefined) return c.json({ error: "曲目不存在" }, 404);
 
-    const { delta, parsedBy } = await parseSongFeedbackAuto(text, llm);
+    const { delta, parsedBy } = await parseSongFeedbackAuto(text, settings.llm);
     if (!delta.understood) {
       return c.json(
         { error: "没理解你的描述。可以试试：『有力气、提高精力』『很安静、能静心』『没有歌词』这类说法" },
@@ -425,7 +600,7 @@ export function createApp({
       return c.json({ error: "描述太长了（上限 2000 字）" }, 400);
     }
 
-    const { context, parsedBy } = await parseContextAuto(input, llm);
+    const { context, parsedBy } = await parseContextAuto(input, settings.llm);
     const outcome = await runRecommend(context, { sessionId, excludeTrackIds, limit: 10 });
     if ("error" in outcome) return c.json({ error: outcome.error }, 400);
 

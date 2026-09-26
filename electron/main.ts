@@ -75,7 +75,8 @@ async function startApi(): Promise<number> {
     : path.resolve("data");
   log(`dataDir=${dataDir}`);
   // LLM key：安装版读 userData/.env（用户可编辑），开发版读项目 .env；环境变量优先
-  loadDotEnv([path.join(app.getPath("userData"), ".env"), path.resolve(".env")]);
+  const userEnvPath = path.join(app.getPath("userData"), ".env");
+  loadDotEnv([userEnvPath, path.resolve(".env")]);
   const llm = readLlmConfig();
   log(`llm=${llm === null ? "disabled" : llm.model}`);
   const neteaseCookie = process.env.STUDYMOOD_NETEASE_COOKIE?.trim();
@@ -84,7 +85,15 @@ async function startApi(): Promise<number> {
   if (await seedSampleIfFirstRun(store)) {
     log("首次运行：已导入示例音乐库");
   }
-  const appHono = createApp({ store, appVersion: app.getVersion(), dataDir, llm, neteaseCookie });
+  // settingsPath：设置页保存的凭据落回 userData/.env，重启后仍生效
+  const appHono = createApp({
+    store,
+    appVersion: app.getVersion(),
+    dataDir,
+    llm,
+    neteaseCookie,
+    settingsPath: userEnvPath,
+  });
 
   // 与 server/main.ts 相同的静态托管（生产构建产物）
   const webDist = app.isPackaged

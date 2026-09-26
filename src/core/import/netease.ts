@@ -68,6 +68,39 @@ async function getText(url: string, fetchImpl: typeof fetch, cookie?: string): P
   return res.text();
 }
 
+export interface NeteaseCookieTestResult {
+  ok: boolean;
+  /** cookie 有效时返回登录账号昵称，用于向用户确认身份 */
+  nickname?: string;
+  error?: string;
+}
+
+/** 设置页「测试 Cookie」：带 MUSIC_U 查询登录账号，有效返回昵称，无效/过期返回 ok=false */
+export async function testNeteaseCookie(
+  cookie: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<NeteaseCookieTestResult> {
+  const trimmed = cookie.trim();
+  if (trimmed === "") return { ok: false, error: "Cookie 为空" };
+  try {
+    const res = await fetchImpl("https://music.163.com/api/nuser/account/get", {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        Referer: "https://music.163.com/",
+        Cookie: `MUSIC_U=${trimmed}`,
+      },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) return { ok: false, error: `网易云接口返回 ${res.status}` };
+    const data = (await res.json()) as { profile?: { nickname?: string } | null };
+    const nickname = data.profile?.nickname;
+    if (typeof nickname === "string" && nickname !== "") return { ok: true, nickname };
+    return { ok: false, error: "Cookie 已失效或未登录（网易云未返回账号信息）" };
+  } catch (err) {
+    return { ok: false, error: `请求失败：${(err as Error).message ?? err}` };
+  }
+}
+
 /** 抓取歌单 → 规范化曲目列表。短链会先跳转，从最终地址提取 id。 */
 export async function fetchNeteasePlaylist(
   input: string,
@@ -122,7 +155,13 @@ export async function fetchNeteasePlaylist(
     ) as {
       result?: { name?: string; trackCount?: number; tracks?: NeteaseSong[]; trackIds?: Array<{ id?: number }> };
     };
-    if (v1.result === undefined) throw new Error("歌单不存在或未公开（私密歌单需要配置登录 Cookie）");
+    if (v1.result === undefined) {
+      throw new Error(
+        cookie !== undefined && cookie !== ""
+          ? "已配置登录 Cookie 但仍读不到该歌单：Cookie 可能已失效，请到「设置」重新获取 MUSIC_U"
+          : "歌单不存在或未公开（私密歌单需要配置登录 Cookie）",
+      );
+    }
     if (v1.result.name?.trim() !== "") name = v1.result.name?.trim() ?? name;
     songs = v1.result.tracks ?? [];
     if (Array.isArray(v1.result.trackIds) && v1.result.trackIds.length > 0) {

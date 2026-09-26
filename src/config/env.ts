@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 /**
  * 零依赖 .env 加载与 LLM 配置读取。
@@ -34,6 +35,40 @@ export function loadDotEnv(paths: string[]): void {
       }
     }
   }
+}
+
+/**
+ * 就地更新 .env 文件中的若干 key（value 为 null 表示删除该行）。
+ *
+ * 保留文件里的注释与未知行（用户可能手工放了其他配置）；文件不存在则创建。
+ * 只被设置页用于写入本机凭据，路径永远指向 .gitignore 覆盖的本地 .env。
+ */
+export function updateDotEnvFile(filePath: string, updates: Record<string, string | null>): void {
+  let lines: string[] = [];
+  if (existsSync(filePath)) {
+    try {
+      lines = readFileSync(filePath, "utf8").split(/\r?\n/);
+    } catch {
+      lines = [];
+    }
+  }
+  const pending = new Map(Object.entries(updates));
+  const seen = new Set<string>();
+  const rewritten = lines.flatMap((line) => {
+    const trimmed = line.trim();
+    const eq = trimmed.indexOf("=");
+    if (trimmed.startsWith("#") || eq <= 0) return [line];
+    const key = trimmed.slice(0, eq).trim();
+    if (!pending.has(key)) return [line];
+    seen.add(key);
+    const value = pending.get(key);
+    return value === null ? [] : [`${key}=${value}`];
+  });
+  for (const [key, value] of pending) {
+    if (value !== null && !seen.has(key)) rewritten.push(`${key}=${value}`);
+  }
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, rewritten.join("\n"), "utf8");
 }
 
 export interface LlmConfig {
