@@ -7,6 +7,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { createApp, seedSampleIfFirstRun } from "../src/server/app.js";
 import { JsonFileStore } from "../src/storage/jsonStore.js";
 import { loadDotEnv, readLlmConfig } from "../src/config/env.js";
+import { createNcmClient, createDefaultRunner, resolveNcmBin } from "../src/core/netease/ncmCli.js";
 
 /**
  * 主进程崩溃/生命周期日志：写入系统日志目录（本地优先，无遥测，日志留在本机）。
@@ -86,6 +87,9 @@ async function startApi(): Promise<number> {
     log("首次运行：已导入示例音乐库");
   }
   // settingsPath：设置页保存的凭据落回 userData/.env，重启后仍生效
+  // ncm-cli：检测到安装时启用网易云播放联动（播放/遥控/全库补位搜索）
+  const ncm = resolveNcmBin() !== null ? createNcmClient(createDefaultRunner()) : null;
+  log(`ncm-cli=${ncm === null ? "not found" : "enabled"}`);
   const appHono = createApp({
     store,
     appVersion: app.getVersion(),
@@ -93,6 +97,7 @@ async function startApi(): Promise<number> {
     llm,
     neteaseCookie,
     settingsPath: userEnvPath,
+    ncm,
   });
 
   // 与 server/main.ts 相同的静态托管（生产构建产物）

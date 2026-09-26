@@ -5,6 +5,7 @@ import path from "node:path";
 import { createApp, seedSampleIfFirstRun } from "./app.js";
 import { JsonFileStore } from "../storage/jsonStore.js";
 import { loadDotEnv, readLlmConfig } from "../config/env.js";
+import { createNcmClient, createDefaultRunner, resolveNcmBin } from "../core/netease/ncmCli.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const DATA_DIR = process.env.STUDYMOOD_DATA_DIR ?? path.resolve("data");
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
   }
 
   // Web 版设置页把凭据落回项目 .env（.gitignore 已排除，永不入库）
+  const ncm = resolveNcmBin() !== null ? createNcmClient(createDefaultRunner()) : null;
   const app = createApp({
     store,
     appVersion: APP_VERSION,
@@ -32,6 +34,7 @@ async function main(): Promise<void> {
     llm: LLM,
     neteaseCookie: NETEASE_COOKIE,
     settingsPath: path.resolve(".env"),
+    ncm,
   });
 
   // 生产模式：存在构建产物时由 API 进程直接托管前端

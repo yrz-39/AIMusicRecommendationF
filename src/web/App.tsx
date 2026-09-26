@@ -36,6 +36,9 @@ interface PlaylistResponse {
     budgetMin: number;
     shortfallSec: number;
   };
+  /** 曲库不足时从网易云全库补位的结果（未触发时 attempted=false） */
+  supplements?: { attempted: boolean; added: number; note: string | null };
+  supplementIds?: string[];
 }
 
 const EXAMPLES = [
@@ -58,7 +61,12 @@ export default function App(): React.ReactElement {
   const [libraryCount, setLibraryCount] = useState<number | null>(null);
   const [feedbackByTrack, setFeedbackByTrack] = useState<Record<string, FeedbackType>>({});
   const [miniMode, setMiniMode] = useState(false);
-  const [appInfo, setAppInfo] = useState<{ version: string | null; dataDir: string | null; llmAvailable: boolean } | null>(null);
+  const [appInfo, setAppInfo] = useState<{
+    version: string | null;
+    dataDir: string | null;
+    llmAvailable: boolean;
+    ncmAvailable: boolean;
+  } | null>(null);
   const [showOnboarding, setShowOnboarding] = useState<boolean>(() => !hasOnboarded());
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -97,8 +105,13 @@ export default function App(): React.ReactElement {
   const refreshHealth = useCallback(async (): Promise<void> => {
     try {
       const res = await fetch("/api/health");
-      const data = (await res.json()) as { version: string | null; dataDir: string | null; llm?: boolean };
-      setAppInfo({ version: data.version ?? null, dataDir: data.dataDir ?? null, llmAvailable: data.llm === true });
+      const data = (await res.json()) as { version: string | null; dataDir: string | null; llm?: boolean; ncm?: boolean };
+      setAppInfo({
+        version: data.version ?? null,
+        dataDir: data.dataDir ?? null,
+        llmAvailable: data.llm === true,
+        ncmAvailable: data.ncm === true,
+      });
     } catch {
       /* health 拉不到时帮助页显示占位文案 */
     }
@@ -217,6 +230,60 @@ export default function App(): React.ReactElement {
     void requestRecommend({ excludeTrackIds: exclude, sessionId: result.sessionId });
   }, [result, requestRecommend]);
 
+  /** 「▶ 在网易云播放」：按歌单顺序逐条入队（首曲清队列并播放，其余追加），ncm-cli 解析每曲的真实 ID */
+  const [playProgress, setPlayProgress] = useState<{ i: number; n: number } | null>(null);
+  const [playNote, setPlayNote] = useState<string | null>(null);
+
+  const playNeteasePlaylist = useCallback(async (): Promise<void> => {
+    if (playlist === null || playProgress !== null) return;
+    const tracks = playlist.playlist.tracks;
+    setPlayNote(null);
+    const failed: string[] = [];
+    for (let i = 0; i < tracks.length; i++) {
+      setPlayProgress({ i: i + 1, n: tracks.length });
+      const rec = tracks[i];
+      if (rec === undefined) continue;
+      try {
+        const res = await fetch(`/api/netease/${i === 0 ? "queue-start" : "queue-add"}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: rec.track.title,
+            artist: rec.track.artist,
+            netease: rec.track.netease ?? {},
+          }),
+        });
+        const data = (await res.json()) as { ok?: boolean; error?: string };
+        if (!res.ok || data.ok !== true) failed.push(`《${rec.track.title}》：${data.error ?? "播放失败"}`);
+      } catch (err) {
+        failed.push(`《${rec.track.title}》：${(err as Error).message}`);
+      }
+    }
+    setPlayProgress(null);
+    setPlayNote(
+      failed.length === 0
+        ? `已把 ${tracks.length} 首加入网易云播放队列 🎧`
+        : `已播放入队（${tracks.length - failed.length}/${tracks.length} 成功）。未成功的：${failed.join("；")}`,
+    );
+  }, [playlist, playProgress]);
+
+  /** 补位歌曲入库：直接走通用导入（服务端会做 songKey 去重） */
+  const addToLibrary = useCallback(
+    async (rec: Recommendation): Promise<void> => {
+      const res = await fetch("/api/library/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tracks: [rec.track] }),
+      });
+      if (!res.ok) {
+        const data = (await res.json()) as { error?: string };
+        throw new Error(data.error ?? "入库失败");
+      }
+      void refreshLibraryCount();
+    },
+    [refreshLibraryCount],
+  );
+
   return (
     <>
       <header className="header">
@@ -263,7 +330,7 @@ export default function App(): React.ReactElement {
 
       {tab === "recommend" ? (
         <>
-          <NowPlayingBar onSimilar={(id, track) => void requestSimilar(id, track)} />
+          <NowPlayingBar onSimilar={(id, track) => void requestSimilar(id, track)} ncmControls={appInfo?.ncmAvailable === true} />
 
           <section className="input-card">
             <label htmlFor="status-input">你现在是什么状态？</label>
@@ -303,7 +370,21 @@ export default function App(): React.ReactElement {
                   学习歌单 · {playlist.playlist.tracks.length} 首 · 约 {Math.round(playlist.playlist.totalSec / 60)} 分钟
                   <span style={{ color: "var(--text-faint)", fontSize: 12, fontWeight: 400 }}>（目标 {playlist.playlist.budgetMin} 分钟）</span>
                 </h2>
+                {appInfo?.ncmAvailable === true && (
+                  <button className="primary-btn play-ncm-btn" disabled={playProgress !== null} onClick={() => void playNeteasePlaylist()}>
+                    {playProgress !== null ? `正在入队 ${playProgress.i}/${playProgress.n}…` : "▶ 在网易云播放"}
+                  </button>
+                )}
               </div>
+              {playNote !== null && <div className="play-note">{playNote}</div>}
+              {playlist.supplements !== null && playlist.supplements !== undefined && playlist.supplements.added > 0 && (
+                <div className="supplement-note">
+                  ☁️ 曲库不够，已从网易云全库补位 {playlist.supplements.added} 首（AI 逐首评估过是否符合当前状态），满意可点「＋ 曲库」收进曲库。
+                </div>
+              )}
+              {playlist.supplements !== null && playlist.supplements !== undefined && playlist.supplements.note !== null && (
+                <div className="supplement-note dim">{playlist.supplements.note}</div>
+              )}
               {playlist.playlist.tracks.map((rec, i) => (
                 <TrackCard
                   key={rec.track.id}
@@ -311,6 +392,8 @@ export default function App(): React.ReactElement {
                   rank={i + 1}
                   feedback={feedbackByTrack[rec.track.id]}
                   onFeedback={sendFeedback}
+                  supplement={playlist.supplementIds?.includes(rec.track.id) === true}
+                  onAddToLibrary={addToLibrary}
                 />
               ))}
               {playlist.playlist.shortfallSec > 60 && (

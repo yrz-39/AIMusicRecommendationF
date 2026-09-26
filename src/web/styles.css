@@ -905,6 +905,63 @@ body.mini-mode .help-list {
   color: var(--red);
 }
 
+/* ---------- M8 网易云联动 ---------- */
+.play-ncm-btn {
+  margin-top: 0;
+  width: auto;
+  padding: 0 20px;
+  white-space: nowrap;
+}
+
+.play-note {
+  background: var(--accent-soft);
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.supplement-note {
+  background: rgba(155, 143, 201, 0.1);
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: 4px 0;
+}
+
+.supplement-note.dim {
+  opacity: 0.75;
+}
+
+.supplement-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--blue);
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-left: 8px;
+  vertical-align: 2px;
+}
+
+.score-value.supplement-mark {
+  font-size: 14px;
+  color: var(--blue);
+}
+
+.track-card.supplement {
+  background: linear-gradient(0deg, rgba(155, 143, 201, 0.05), rgba(155, 143, 201, 0.05)), var(--card);
+}
+
+.np-ctl .np-btn {
+  min-width: 34px;
+  text-align: center;
+  font-size: 14px;
+}
+
 .onboard-actions button {
   white-space: nowrap;
 }

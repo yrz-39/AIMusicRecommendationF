@@ -13,10 +13,15 @@ export function TrackCard(props: {
   rank: number;
   feedback?: FeedbackType;
   onFeedback: (trackId: string, type: FeedbackType) => void;
+  /** 网易云全库补位的歌曲：显示「云补位」标记并提供「+ 曲库」 */
+  supplement?: boolean;
+  onAddToLibrary?: (rec: Recommendation) => Promise<void>;
 }): React.ReactElement {
-  const { rec, rank, feedback, onFeedback } = props;
+  const { rec, rank, feedback, onFeedback, supplement = false, onAddToLibrary } = props;
   const { track, score, reasons } = rec;
   const [copied, setCopied] = useState(false);
+  const [added, setAdded] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   const copySong = async (): Promise<void> => {
     try {
@@ -28,12 +33,26 @@ export function TrackCard(props: {
     }
   };
 
+  const addToLibrary = async (): Promise<void> => {
+    if (onAddToLibrary === undefined || adding || added) return;
+    setAdding(true);
+    try {
+      await onAddToLibrary(rec);
+      setAdded(true);
+    } finally {
+      setAdding(false);
+    }
+  };
+
   return (
-    <article className="track-card">
+    <article className={supplement ? "track-card supplement" : "track-card"}>
       <div className="track-top">
         <div className={rank <= 3 ? "rank top" : "rank"}>{rank}</div>
         <div className="track-meta">
-          <div className="track-title">{track.title}</div>
+          <div className="track-title">
+            {track.title}
+            {supplement && <span className="supplement-badge">网易云补充</span>}
+          </div>
           <div className="track-sub">
             {track.artist}
             {track.album !== undefined && ` · 《${track.album}》`} · {formatDuration(track.durationSec)}
@@ -48,11 +67,20 @@ export function TrackCard(props: {
           </div>
         </div>
         <div className="score-box">
-          <div className="score-value">{score.toFixed(1)}</div>
-          <div className="score-bar">
-            <i style={{ width: `${score}%` }} />
-          </div>
-          <div className="score-label">匹配度</div>
+          {supplement ? (
+            <>
+              <div className="score-value supplement-mark">云补位</div>
+              <div className="score-label">来自全库搜索</div>
+            </>
+          ) : (
+            <>
+              <div className="score-value">{score.toFixed(1)}</div>
+              <div className="score-bar">
+                <i style={{ width: `${score}%` }} />
+              </div>
+              <div className="score-label">匹配度</div>
+            </>
+          )}
         </div>
       </div>
 
@@ -88,6 +116,11 @@ export function TrackCard(props: {
         </button>
         {feedback !== undefined && <span className="fb-hint">已记录，下次推荐会参考</span>}
         <span style={{ flex: 1 }} />
+        {supplement && onAddToLibrary !== undefined && (
+          <button className="fb-btn" disabled={adding || added} onClick={() => void addToLibrary()}>
+            {added ? "✓ 已入库" : adding ? "入库中…" : "＋ 曲库"}
+          </button>
+        )}
         <button className="fb-btn" onClick={() => void copySong()}>
           {copied ? "✓ 已复制" : "⧉ 复制"}
         </button>

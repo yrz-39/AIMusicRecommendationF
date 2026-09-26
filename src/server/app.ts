@@ -1,18 +1,20 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { DataStore } from "../storage/jsonStore.js";
 import { recommend } from "../core/recommend/engine.js";
 import { contextFromTrack, matchPlayingTrack } from "../core/recommend/contextFromTrack.js";
 import { parseContextAuto, parseSongFeedbackAuto } from "../core/llm/auto.js";
-import { buildPlaylist } from "../core/recommend/playlist.js";
+import { buildPlaylist, DEFAULT_PLAYLIST_BUDGET_MIN } from "../core/recommend/playlist.js";
 import { applyFeatureDelta } from "../core/learn/featureLearner.js";
 import { prelabelTracks } from "../core/llm/prelabel.js";
 import { normalizeGenres } from "../core/import/genreMap.js";
 import { fetchNeteasePlaylist, testNeteaseCookie } from "../core/import/netease.js";
+import type { NcmClient, NcmSong } from "../core/netease/ncmCli.js";
+import { evaluateFillCandidates, generateSearchQueries, type FillCandidate } from "../core/llm/playlistFill.js";
 import { detectNowPlaying } from "../core/native/nowPlaying.js";
 import { validateImportRows, songKey } from "../core/import/validate.js";
 import { importCsv } from "../core/import/csv.js";
 import { getSampleLibrary } from "../sample/sampleLibrary.js";
-import type { FeedbackEvent, FeedbackType, Recommendation, RecommendationSession, StudyContext } from "../core/types.js";
+import type { FeedbackEvent, FeedbackType, Recommendation, RecommendationSession, StudyContext, Track } from "../core/types.js";
 import { updateDotEnvFile, type LlmConfig } from "../config/env.js";
 import { testLlmConnection } from "../core/llm/deepseek.js";
 import { randomUUID } from "node:crypto";
@@ -44,6 +46,8 @@ export interface AppDeps {
   settingsPath?: string;
   /** 设置页连通性测试用 fetch（测试注入 mock）；生产走全局 fetch */
   fetchImpl?: typeof fetch;
+  /** 网易云官方 ncm-cli 客户端（检测到安装时传入）；null = 不可用，「在网易云播放」等联动功能关闭 */
+  ncm?: NcmClient | null;
 }
 
 /** 首次运行且曲库为空时导入示例库（通过持久化 flag 保证只执行一次） */
@@ -69,6 +73,7 @@ export function createApp({
   neteaseCookie,
   settingsPath,
   fetchImpl,
+  ncm = null,
 }: AppDeps): Hono {
   const app = new Hono();
 
@@ -94,19 +99,30 @@ export function createApp({
     return `${t.slice(0, 3)}••••${t.slice(-4)}`;
   };
 
-  const settingsSnapshot = () => ({
-    llm: {
-      configured: settings.llm !== null,
-      baseUrl: settings.llm?.baseUrl ?? "https://api.deepseek.com",
-      model: settings.llm?.model ?? "deepseek-chat",
-      apiKeyMasked: settings.llm ? maskSecret(settings.llm.apiKey) : null,
-    },
-    netease: {
-      configured: (settings.neteaseCookie ?? "").trim() !== "",
-      cookieMasked: settings.neteaseCookie ? maskSecret(settings.neteaseCookie) : null,
-    },
-    settingsPath: settingsPath ?? null,
-  });
+  const settingsSnapshot = async () => {
+    let ncmStatus: { appIdSet: boolean; player: string | null } | null = null;
+    if (ncm !== null) {
+      try {
+        ncmStatus = await ncm.configStatus();
+      } catch {
+        ncmStatus = { appIdSet: false, player: null };
+      }
+    }
+    return {
+      llm: {
+        configured: settings.llm !== null,
+        baseUrl: settings.llm?.baseUrl ?? "https://api.deepseek.com",
+        model: settings.llm?.model ?? "deepseek-chat",
+        apiKeyMasked: settings.llm ? maskSecret(settings.llm.apiKey) : null,
+      },
+      netease: {
+        configured: (settings.neteaseCookie ?? "").trim() !== "",
+        cookieMasked: settings.neteaseCookie ? maskSecret(settings.neteaseCookie) : null,
+      },
+      settingsPath: settingsPath ?? null,
+      ncm: { available: ncm !== null, appIdSet: ncmStatus?.appIdSet ?? false, player: ncmStatus?.player ?? null },
+    };
+  };
 
   /** 应用运行时设置 + 同步进程环境变量 + 落盘（settingsPath 存在时）。传 null 清除对应项 */
   const applySettings = (updates: {
@@ -163,7 +179,7 @@ export function createApp({
   };
 
   /** 设置页：当前配置状态（凭据只回掩码，完整值不出渲染层边界） */
-  app.get("/api/settings", (c) => c.json(settingsSnapshot()));
+  app.get("/api/settings", async (c) => c.json(await settingsSnapshot()));
 
   /** 保存设置：立即生效（热更新），同时写入 .env 以便重启后保留 */
   app.put("/api/settings", async (c) => {
@@ -176,8 +192,10 @@ export function createApp({
     const b = (body ?? {}) as {
       llm?: { apiKey?: unknown; baseUrl?: unknown; model?: unknown };
       neteaseCookie?: unknown;
+      ncm?: { appId?: unknown; privateKey?: unknown };
     };
     const updates: Parameters<typeof applySettings>[0] = {};
+    let ncmConfigured = false;
     if (b.llm !== undefined && b.llm !== null && typeof b.llm === "object") {
       const llmUpdate: { apiKey?: string; baseUrl?: string; model?: string } = {};
       if (b.llm.apiKey !== undefined) {
@@ -200,11 +218,46 @@ export function createApp({
       }
       updates.neteaseCookie = b.neteaseCookie as string | null;
     }
-    if (updates.llm === undefined && updates.neteaseCookie === undefined) {
+    if (b.ncm !== undefined && b.ncm !== null && typeof b.ncm === "object") {
+      if (ncm === null) return c.json({ error: "未检测到 ncm-cli，请先安装（npm install -g @music163/ncm-cli）" }, 400);
+      if (typeof b.ncm.appId !== "string" || b.ncm.appId.trim() === "" || typeof b.ncm.privateKey !== "string" || b.ncm.privateKey.trim() === "") {
+        return c.json({ error: "appId 与 privateKey 都必须是非空字符串" }, 400);
+      }
+      try {
+        await ncm.setCredentials(b.ncm.appId.trim(), b.ncm.privateKey.trim());
+      } catch (err) {
+        return c.json({ error: (err as Error).message }, 502);
+      }
+      ncmConfigured = true;
+    }
+    if (updates.llm === undefined && updates.neteaseCookie === undefined && !ncmConfigured) {
       return c.json({ error: "没有要保存的设置" }, 400);
     }
-    applySettings(updates);
-    return c.json(settingsSnapshot());
+    if (updates.llm !== undefined || updates.neteaseCookie !== undefined) applySettings(updates);
+    return c.json(await settingsSnapshot());
+  });
+
+  /** 设置页「测试联动」：ncm-cli 版本/凭证/登录三查，给用户一个明确的就绪判断 */
+  app.post("/api/settings/test-ncm", async (c) => {
+    if (ncm === null) return c.json({ ok: false, error: "未检测到 ncm-cli，请先安装（npm install -g @music163/ncm-cli）" }, 400);
+    const version = await ncm.version();
+    if (version === null) return c.json({ ok: false, error: "ncm-cli 无法执行（检查安装/PATH，或到设置里指定路径）" }, 502);
+    const cfg = await ncm.configStatus();
+    if (!cfg.appIdSet) return c.json({ ok: false, version, appIdSet: false, error: "开放平台凭证未配置，请先在上方填写保存" });
+    let login: { loggedIn: boolean; message: string };
+    try {
+      login = await ncm.loginCheck();
+    } catch (err) {
+      return c.json({ ok: false, version, appIdSet: true, error: `登录状态检查失败：${(err as Error).message}` });
+    }
+    return c.json({
+      ok: login.loggedIn,
+      version,
+      appIdSet: true,
+      player: cfg.player,
+      loggedIn: login.loggedIn,
+      error: login.loggedIn ? undefined : login.message,
+    });
   });
 
   /** 设置页「测试连接」：默认测已保存配置，body 里可带未保存的候选值先测再存 */
@@ -251,8 +304,101 @@ export function createApp({
       version: appVersion ?? null,
       dataDir: dataDir ?? null,
       llm: settings.llm !== null,
+      ncm: ncm !== null,
     }),
   );
+
+  /** 曲库推荐已填的时长（秒）——用于判断歌单缺口是否值得触发全库补位 */
+  const playlistBudgetUsed = (recs: Recommendation[]): number => recs.reduce((sum, r) => sum + r.track.durationSec, 0);
+
+  /** 把播放请求条目解析为 ncm-cli 歌曲对象：已有加密/原始 ID 直接用，否则按「歌名 歌手」搜索匹配 */
+  const resolvePlaybackSong = async (item: { title: string; artist: string; netease?: { encryptedId?: unknown; originalId?: unknown } }): Promise<NcmSong> => {
+    if (ncm === null) throw new Error("ncm-cli 不可用");
+    const enc = typeof item.netease?.encryptedId === "string" ? item.netease.encryptedId : undefined;
+    const orig = typeof item.netease?.originalId === "string" ? item.netease.originalId : undefined;
+    if (enc !== undefined && enc !== "" && orig !== undefined && orig !== "") {
+      return { encryptedId: enc, originalId: orig, title: item.title, artist: item.artist };
+    }
+    const songs = await ncm.searchSong(`${item.title} ${item.artist}`, 10);
+    if (songs.length === 0) throw new Error(`网易云搜索无结果：《${item.title}》`);
+    const norm = (s: string): string =>
+      s.toLowerCase().replace(/\s+/g, "").replace(/[（(【\[].*?[)）】\]]/g, "").replace(/[·、，,。.\-—~！!？?：:'’"]/g, "");
+    const wantTitle = norm(item.title);
+    const wantArtist = norm(item.artist);
+    // 匹配优先级：歌名+歌手全等 > 歌名全等 > 歌名包含（长度达标）。宁可不播不播错。
+    const byKey = (t: string, a: string): boolean => norm(t) === wantTitle && norm(a) === wantArtist;
+    const song =
+      songs.find((s) => byKey(s.title, s.artist)) ??
+      songs.find((s) => norm(s.title) === wantTitle) ??
+      songs.find((s) => norm(s.title).includes(wantTitle) && wantTitle.length >= 2);
+    if (song === undefined) throw new Error(`没找到可靠匹配：《${item.title}》${item.artist}（搜索结果都不像）`);
+    return song;
+  };
+
+  /** 队列首曲：清空队列并立即播放（与 queue-add 搭配，由前端按歌单顺序逐条调用） */
+  const queueEndpoint = (mode: "start" | "add") =>
+    async (c: Context) => {
+      if (ncm === null) return c.json({ error: "未检测到 ncm-cli，请到「设置」查看安装与配置指引" }, 400);
+      let body: unknown;
+      try {
+        body = await c.req.json();
+      } catch {
+        return c.json({ error: "请求体必须是 JSON" }, 400);
+      }
+      const item = (body ?? {}) as { title?: unknown; artist?: unknown; netease?: Record<string, unknown> };
+      if (typeof item.title !== "string" || item.title.trim() === "" || typeof item.artist !== "string") {
+        return c.json({ error: "缺少 title/artist" }, 400);
+      }
+      const playItem = { title: item.title.trim(), artist: item.artist.trim(), netease: item.netease };
+      try {
+        const song = await resolvePlaybackSong(playItem);
+        if (mode === "start") {
+          await ncm.queueClear();
+          await ncm.playSong(song);
+        } else {
+          await ncm.queueAdd(song);
+        }
+        return c.json({ ok: true, status: mode === "start" ? "playing" : "queued", matchedTitle: song.title, matchedArtist: song.artist });
+      } catch (err) {
+        return c.json({ ok: false, error: (err as Error).message }, 502);
+      }
+    };
+
+  app.post("/api/netease/queue-start", queueEndpoint("start"));
+  app.post("/api/netease/queue-add", queueEndpoint("add"));
+
+  /** 小窗/正在播放条的播放遥控（ncm-cli 直接控制网易云客户端或 mpv） */
+  app.post("/api/netease/control", async (c) => {
+    if (ncm === null) return c.json({ error: "未检测到 ncm-cli" }, 400);
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体必须是 JSON" }, 400);
+    }
+    const action = (body as { action?: unknown } | null)?.action;
+    const valid = ["pause", "resume", "stop", "next", "prev"] as const;
+    if (typeof action !== "string" || !valid.includes(action as (typeof valid)[number])) {
+      return c.json({ error: `action 必须是 ${valid.join("/")}` }, 400);
+    }
+    try {
+      await ncm.control(action as (typeof valid)[number]);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 502);
+    }
+  });
+
+  /** ncm-cli 播放状态（托盘场景下桌面检测失效时的兜底信号源） */
+  app.get("/api/netease/state", async (c) => {
+    if (ncm === null) return c.json({ available: false, status: "unknown", playing: false });
+    try {
+      const s = await ncm.state();
+      return c.json({ available: true, ...s });
+    } catch (err) {
+      return c.json({ available: true, status: "unknown", playing: false, error: (err as Error).message });
+    }
+  });
 
   /** 曲库中特征缺失（energy 未标注）的曲目数，供 UI 提示「AI 补全」入口 */
   app.get("/api/library/unlabeled-count", async (c) => {
@@ -533,9 +679,101 @@ export function createApp({
     const { context, parsedBy } = await parseContextAuto(input, settings.llm);
     const outcome = await runRecommend(context, { sessionId, limit: 60 });
     if ("error" in outcome) return c.json({ error: outcome.error }, 400);
-    const playlist = buildPlaylist(outcome.recommendations, context.durationMinutes);
 
-    return c.json({ sessionId: outcome.sessionId, context, parsedBy, playlist });
+    // 曲库填不满预算时（>2 分钟缺口），且有 ncm-cli + LLM：去网易云全库搜候选，
+    // LLM 逐首评估是否符合当前情境，通过的以「网易云补充」身份参与预算填充。
+    let ranked = outcome.recommendations;
+    const supplements: { attempted: boolean; added: number; note: string | null } = {
+      attempted: false,
+      added: 0,
+      note: null,
+    };
+    /** 补位曲目 id（前端据此显示「云补位」标记与「＋曲库」按钮） */
+    const supplementIds: string[] = [];
+    const needSec = (context.durationMinutes ?? DEFAULT_PLAYLIST_BUDGET_MIN) * 60 - playlistBudgetUsed(outcome.recommendations);
+    if (needSec > 120 && settings.llm !== null && ncm !== null) {
+      supplements.attempted = true;
+      try {
+        const queries = await generateSearchQueries(context, settings.llm);
+        const library = await store.loadTracks();
+        const libraryKeys = new Set(library.map((t) => songKey(t.title, t.artist)));
+        const seenIds = new Set<string>();
+        const rawSongs = new Map<string, NcmSong>();
+        const candidates: FillCandidate[] = [];
+        searchLoop: for (const q of queries.slice(0, 3)) {
+          let songs: NcmSong[] = [];
+          try {
+            songs = await ncm.searchSong(q, 10);
+          } catch {
+            continue; // 单个关键词失败不影响整体
+          }
+          for (const s of songs) {
+            if (seenIds.has(s.originalId)) continue;
+            seenIds.add(s.originalId);
+            if (libraryKeys.has(songKey(s.title, s.artist))) continue; // 曲库已有，不算补充
+            rawSongs.set(s.originalId, s);
+            candidates.push({
+              key: s.originalId,
+              title: s.title,
+              artist: s.artist,
+              album: s.album,
+              durationSec: s.durationSec ?? 240,
+            });
+            if (candidates.length >= 12) break searchLoop;
+          }
+        }
+        if (candidates.length === 0) {
+          supplements.note = "网易云全库没有搜到可补充的新歌";
+        } else {
+          const decisions = await evaluateFillCandidates(context, candidates, settings.llm);
+          if (decisions === null) {
+            supplements.note = "LLM 评估没有完成，本次未补位";
+          } else {
+            const accepted: Recommendation[] = [];
+            for (const cand of candidates) {
+              const d = decisions.get(cand.key);
+              const raw = rawSongs.get(cand.key);
+              if (d === undefined || !d.accept || raw === undefined) continue;
+              const track: Track = {
+                id: `nes-${raw.originalId}`,
+                title: raw.title,
+                artist: raw.artist,
+                album: raw.album,
+                durationSec: raw.durationSec ?? 240,
+                energy: d.energy,
+                moodTags: d.moodTags.length > 0 ? d.moodTags : undefined,
+                vocalDensity: d.vocalDensity,
+                source: { kind: "netease" },
+                netease: {
+                  songId: /^\d+$/.test(raw.originalId) ? Number(raw.originalId) : undefined,
+                  encryptedId: raw.encryptedId,
+                  originalId: raw.originalId,
+                },
+              };
+              accepted.push({
+                track,
+                // 补位曲目排在曲库命中之后，分数仅用于展示（TrackCard 对补位显示「云补位」而非分数）
+                score: 50,
+                components: [],
+                reasons: [d.reason],
+              });
+            }
+            if (accepted.length > 0) {
+              ranked = [...outcome.recommendations, ...accepted];
+              supplements.added = accepted.length;
+              supplementIds.push(...accepted.map((r) => r.track.id));
+            } else {
+              supplements.note = "候选歌都被判定为不符合当前情境，未补位";
+            }
+          }
+        }
+      } catch (err) {
+        supplements.note = `补位失败：${(err as Error).message}`;
+      }
+    }
+
+    const playlist = buildPlaylist(ranked, context.durationMinutes);
+    return c.json({ sessionId: outcome.sessionId, context, parsedBy, playlist, supplements, supplementIds });
   });
 
   app.post("/api/tracks/:id/learn", async (c) => {

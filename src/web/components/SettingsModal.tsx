@@ -11,6 +11,7 @@ interface SettingsSnapshot {
   llm: { configured: boolean; baseUrl: string; model: string; apiKeyMasked: string | null };
   netease: { configured: boolean; cookieMasked: string | null };
   settingsPath: string | null;
+  ncm: { available: boolean; appIdSet: boolean; player: string | null };
 }
 
 interface Msg {
@@ -39,9 +40,12 @@ export function SettingsModal({ onClose, onSaved }: SettingsModalProps): React.R
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
   const [cookie, setCookie] = useState("");
+  const [ncmAppId, setNcmAppId] = useState("");
+  const [ncmKey, setNcmKey] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [llmMsg, setLlmMsg] = useState<Msg | null>(null);
   const [netMsg, setNetMsg] = useState<Msg | null>(null);
+  const [ncmMsg, setNcmMsg] = useState<Msg | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -178,6 +182,59 @@ export function SettingsModal({ onClose, onSaved }: SettingsModalProps): React.R
     }
   }, [onSaved]);
 
+  /** 保存开放平台凭证：服务端转写入 ncm-cli 自己的配置（不经过 StudyMood 的 .env） */
+  const saveNcm = useCallback(async (): Promise<void> => {
+    if (ncmAppId.trim() === "" || ncmKey.trim() === "") {
+      setNcmMsg({ ok: false, text: "AppId 和 PrivateKey 都要填" });
+      return;
+    }
+    setBusy("ncm-save");
+    setNcmMsg(null);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ncm: { appId: ncmAppId.trim(), privateKey: ncmKey.trim() } }),
+      });
+      const data = (await res.json()) as SettingsSnapshot & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "保存失败");
+      setInfo(data);
+      setNcmKey("");
+      setNcmMsg({ ok: true, text: "已写入 ncm-cli。接下来请在终端运行 ncm-cli login 扫码登录（一次即可）" });
+    } catch (err) {
+      setNcmMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  }, [ncmAppId, ncmKey]);
+
+  const testNcm = useCallback(async (): Promise<void> => {
+    setBusy("ncm-test");
+    setNcmMsg(null);
+    try {
+      const res = await fetch("/api/settings/test-ncm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        version?: string;
+        player?: string | null;
+        error?: string;
+      };
+      if (!res.ok || data.ok !== true) throw new Error(data.error ?? "联动未就绪");
+      setNcmMsg({
+        ok: true,
+        text: `联动就绪（ncm-cli ${data.version ?? ""}${data.player !== null && data.player !== undefined ? ` · 播放器 ${data.player}` : ""}）`,
+      });
+    } catch (err) {
+      setNcmMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
   const llmStatus = info === null ? "…" : info.llm.configured ? `已启用 · ${info.llm.model}` : "未配置 · 状态理解走本地规则版";
 
   return (
@@ -287,6 +344,68 @@ export function SettingsModal({ onClose, onSaved }: SettingsModalProps): React.R
             )}
           </div>
           {netMsg !== null && <p className={netMsg.ok ? "settings-msg ok" : "settings-msg bad"}>{netMsg.text}</p>}
+        </section>
+
+        <section className="help-section">
+          <h3>
+            🎧 网易云播放联动（实验）{" "}
+            <span className={info?.ncm.available === true ? (info.ncm.appIdSet ? "settings-badge on" : "settings-badge") : "settings-badge"}>
+              {info === null
+                ? "…"
+                : !info.ncm.available
+                  ? "未检测到 ncm-cli"
+                  : info.ncm.appIdSet
+                    ? `已配置${info.ncm.player !== null ? ` · ${info.ncm.player}` : ""}`
+                    : "待配置凭证"}
+            </span>
+          </h3>
+          {info !== null && !info.ncm.available ? (
+            <p className="settings-hint">
+              未检测到 ncm-cli。先安装：终端运行 <code className="help-path">npm install -g @music163/ncm-cli</code>
+              （需要 Node.js ≥ 18），装好后重启本应用即可开启。开启后可以：生成的歌单一键在网易云里播放、
+              小窗直接遥控切歌、曲库不够时自动从网易云全库找合适的歌补进歌单。
+            </p>
+          ) : (
+            <>
+              <p className="settings-hint">
+                三步开启：① 安装 ncm-cli（<code className="help-path">npm install -g @music163/ncm-cli</code>）；
+                ② 到网易云音乐开放平台（developer.music.163.com）个人入驻，把拿到的 AppId / PrivateKey 填这里；
+                ③ 终端运行 <code className="help-path">ncm-cli login</code> 扫码登录，并建议运行{" "}
+                <code className="help-path">ncm-cli configure</code> 把播放器选为「网易云客户端」。
+              </p>
+              <div className="settings-grid">
+                <label>
+                  开放平台 AppId
+                  <input
+                    type="text"
+                    value={ncmAppId}
+                    onChange={(e) => setNcmAppId(e.target.value)}
+                    placeholder="开放平台入驻后获取"
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  PrivateKey
+                  <input
+                    type="password"
+                    value={ncmKey}
+                    onChange={(e) => setNcmKey(e.target.value)}
+                    placeholder="开放平台入驻后获取"
+                    autoComplete="off"
+                  />
+                </label>
+              </div>
+              <div className="settings-actions">
+                <button className="primary-btn" disabled={busy !== null} onClick={() => void saveNcm()}>
+                  {busy === "ncm-save" ? "保存中…" : "保存并写入 ncm-cli"}
+                </button>
+                <button className="ghost-btn" disabled={busy !== null} onClick={() => void testNcm()}>
+                  {busy === "ncm-test" ? "检测中…" : "检测联动状态"}
+                </button>
+              </div>
+            </>
+          )}
+          {ncmMsg !== null && <p className={ncmMsg.ok ? "settings-msg ok" : "settings-msg bad"}>{ncmMsg.text}</p>}
         </section>
 
         <section className="help-section">

@@ -23,8 +23,11 @@ interface LearnResponse {
  */
 export function NowPlayingBar({
   onSimilar,
+  ncmControls = false,
 }: {
   onSimilar: (trackId: string, track: Track) => void;
+  /** ncm-cli 可用时显示播放遥控（暂停/继续/切歌），直接控制网易云客户端 */
+  ncmControls?: boolean;
 }): React.ReactElement | null {
   const [state, setState] = useState<NowPlayingCurrent | null>(null);
   const [learnOpen, setLearnOpen] = useState(false);
@@ -32,8 +35,24 @@ export function NowPlayingBar({
   const [learnMsg, setLearnMsg] = useState<string | null>(null);
   const [learnLoading, setLearnLoading] = useState(false);
   const [similarLoading, setSimilarLoading] = useState(false);
+  const [ctlBusy, setCtlBusy] = useState(false);
   const timerRef = useRef<number | null>(null);
   const disposedRef = useRef(false);
+
+  const sendControl = useCallback(async (action: "pause" | "resume" | "next" | "prev"): Promise<void> => {
+    setCtlBusy(true);
+    try {
+      await fetch("/api/netease/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+    } catch {
+      /* 遥控失败静默，状态条下次轮询自会纠正 */
+    } finally {
+      setCtlBusy(false);
+    }
+  }, []);
 
   const poll = useCallback(async (): Promise<void> => {
     try {
@@ -111,6 +130,24 @@ export function NowPlayingBar({
             <span className="np-hint">（不在曲库中，去「音乐库」添加后才能教它）</span>
           )}
         </span>
+        {ncmControls && (
+          <span className="np-actions np-ctl">
+            <button className="ghost-btn np-btn" title="上一首" disabled={ctlBusy} onClick={() => void sendControl("prev")}>
+              ⏮
+            </button>
+            <button
+              className="ghost-btn np-btn"
+              title={state.playing ? "暂停" : "继续播放"}
+              disabled={ctlBusy}
+              onClick={() => void sendControl(state.playing ? "pause" : "resume")}
+            >
+              {state.playing ? "⏸" : "▶"}
+            </button>
+            <button className="ghost-btn np-btn" title="下一首" disabled={ctlBusy} onClick={() => void sendControl("next")}>
+              ⏭
+            </button>
+          </span>
+        )}
         {track !== null && (
           <span className="np-actions">
             <button className="ghost-btn np-btn" disabled={similarLoading} onClick={() => void requestSimilar()}>

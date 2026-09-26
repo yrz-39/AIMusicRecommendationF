@@ -32,11 +32,15 @@ export interface Track {
     kind: "sample" | "json" | "csv" | "manual" | "netease";
     importedAt?: string;
   };
-  /** 预留：网易云检索定位信息（最终目标：自动搜索播放） */
+  /** 网易云检索/播放定位信息（M8：自动搜索与在网易云播放） */
   netease?: {
     songId?: number;
     /** 检索用的规范关键词，缺省由 title+artist 生成 */
     searchKeyword?: string;
+    /** 32 位 hex 加密 ID（ncm-cli 播放用；搜索补位时携带） */
+    encryptedId?: string;
+    /** 数字明文 ID（ncm-cli 唤起客户端用） */
+    originalId?: string;
   };
 }
 
