@@ -3,9 +3,10 @@ import type { FeedbackType } from "../App.js";
 import { energyLabel, formatDuration } from "../App.js";
 import type { Recommendation } from "../../core/types.js";
 
-function neteaseSearchUrl(track: Recommendation["track"]): string {
-  const keyword = track.netease?.searchKeyword ?? `${track.title} ${track.artist}`;
-  return `https://music.163.com/#/search/m/?s=${encodeURIComponent(keyword)}`;
+function neteaseOpenUrl(track: Recommendation["track"]): string {
+  // 有网易云 id 时用客户端协议唤起桌面版（用户不登录网页版）；否则退回网页搜索页
+  const songId = track.netease?.songId;
+  return songId !== undefined ? `orpheus://song/${songId}` : `https://music.163.com/#/search/m/?s=${encodeURIComponent(track.netease?.searchKeyword ?? `${track.title} ${track.artist}`)}`;
 }
 
 export function TrackCard(props: {
@@ -16,12 +17,15 @@ export function TrackCard(props: {
   /** 网易云全库补位的歌曲：显示「云补位」标记并提供「+ 曲库」 */
   supplement?: boolean;
   onAddToLibrary?: (rec: Recommendation) => Promise<void>;
+  /** ncm 可用时提供单曲试听（替换当前队列） */
+  onAudition?: (rec: Recommendation) => Promise<void>;
 }): React.ReactElement {
-  const { rec, rank, feedback, onFeedback, supplement = false, onAddToLibrary } = props;
+  const { rec, rank, feedback, onFeedback, supplement = false, onAddToLibrary, onAudition } = props;
   const { track, score, reasons } = rec;
   const [copied, setCopied] = useState(false);
   const [added, setAdded] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [auditioning, setAuditioning] = useState(false);
 
   const copySong = async (): Promise<void> => {
     try {
@@ -41,6 +45,16 @@ export function TrackCard(props: {
       setAdded(true);
     } finally {
       setAdding(false);
+    }
+  };
+
+  const audition = async (): Promise<void> => {
+    if (onAudition === undefined || auditioning) return;
+    setAuditioning(true);
+    try {
+      await onAudition(rec);
+    } finally {
+      setAuditioning(false);
     }
   };
 
@@ -120,14 +134,31 @@ export function TrackCard(props: {
         </button>
         {feedback !== undefined && <span className="fb-hint">已记录，下次推荐会参考</span>}
         <span style={{ flex: 1 }} />
+        {supplement && onAudition !== undefined && (
+          <button
+            className="fb-btn"
+            disabled={auditioning}
+            title="通过 ncm 播放器试听这一首（会替换当前播放队列）"
+            onClick={() => void audition()}
+          >
+            {auditioning ? "切歌中…" : "▶ 试听"}
+          </button>
+        )}
         {supplement && onAddToLibrary !== undefined && (
           <button className="fb-btn" disabled={adding || added} onClick={() => void addToLibrary()}>
             {added ? "✓ 已入库" : adding ? "入库中…" : "＋ 曲库"}
           </button>
-        )}        <button className="fb-btn" onClick={() => void copySong()}>
+        )}
+        <button className="fb-btn" onClick={() => void copySong()}>
           {copied ? "✓ 已复制" : "⧉ 复制"}
         </button>
-        <a className="fb-btn netease-link" href={neteaseSearchUrl(track)} target="_blank" rel="noreferrer">
+        <a
+          className="fb-btn netease-link"
+          href={neteaseOpenUrl(track)}
+          target="_blank"
+          rel="noreferrer"
+          title={track.netease?.songId !== undefined ? "在网易云桌面客户端打开这首歌" : "在网页版搜索这首歌"}
+        >
           ▶ 网易云
         </a>
       </div>

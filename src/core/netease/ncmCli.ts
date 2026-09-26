@@ -47,6 +47,17 @@ export interface NcmConfigStatus {
   player: string | null;
 }
 
+export interface NcmSearchResult {
+  /** 可播放的候选（入队/播放只能用这些） */
+  songs: NcmSong[];
+  /** 搜到但因无版权/不可播被排除的数量（用于向用户解释「为什么搜到了却放不了」） */
+  unplayableCount: number;
+  /** 被排除的不可播放曲目样本（前 10 条）——用于识别「原曲就在其中」的版权情形 */
+  unplayableSongs: NcmSong[];
+  /** 搜索返回的原始条目数 */
+  total: number;
+}
+
 export interface NcmClient {
   version(): Promise<string | null>;
   configStatus(): Promise<NcmConfigStatus>;
@@ -54,6 +65,7 @@ export interface NcmClient {
   /** 登录检查（0.1.7 起顺带自动续期 token） */
   loginCheck(): Promise<{ loggedIn: boolean; message: string }>;
   searchSong(keyword: string, limit?: number): Promise<NcmSong[]>;
+  searchSongVerbose(keyword: string, limit?: number): Promise<NcmSearchResult>;
   playSong(song: NcmSong): Promise<void>;
   queueAdd(song: NcmSong, opts?: { next?: boolean }): Promise<void>;
   queueClear(): Promise<void>;
@@ -95,19 +107,20 @@ const asIdNum = (v: unknown): number | undefined => {
   return undefined;
 };
 
-/** 单个搜索结果对象 → NcmSong；字段名防御性兼容。
+/** 单个搜索结果对象 → { song, playable }；字段名防御性兼容。
  *  0.1.7 真实形态：{ originalId: number, id: "32位HEX"(加密ID), name, artists: [{name}], album: {name}, duration(ms), playFlag } */
-export function parseNcmSong(item: Record<string, unknown>): NcmSong | null {
+export function parseNcmSongItem(item: Record<string, unknown>): { song: NcmSong | null; playable: boolean } {
   const asHexId = (v: unknown): string | undefined =>
     typeof v === "string" && /^[0-9a-f]{16,64}$/i.test(v.trim()) ? v.trim() : undefined;
   const encryptedId = asStr(item.encryptedId) ?? asStr(item.encrypted_id) ?? asHexId(item.id);
   const originalIdRaw = asIdNum(item.originalId) ?? asIdNum(item.original_id) ?? asIdNum(item.songId);
   const title = asStr(item.name) ?? asStr(item.title);
-  if (encryptedId === undefined || originalIdRaw === undefined || title === undefined) return null;
+  if (encryptedId === undefined || originalIdRaw === undefined || title === undefined) {
+    return { song: null, playable: false };
+  }
 
-  // 无版权/不可播放的歌搜到了也没法播，直接过滤
-  if (item.playFlag === false) return null;
-  if (item.noCopyrightRcmd !== null && item.noCopyrightRcmd !== undefined) return null;
+  // 无版权/不可播放的歌搜到了也没法播，调用方据此向用户如实解释
+  const playable = item.playFlag !== false && (item.noCopyrightRcmd === null || item.noCopyrightRcmd === undefined);
 
   let artist = "";
   if (Array.isArray(item.artists)) {
@@ -130,13 +143,22 @@ export function parseNcmSong(item: Record<string, unknown>): NcmSong | null {
 
   const durationMs = asNum(item.duration) ?? asNum(item.dt);
   return {
-    encryptedId,
-    originalId: String(originalIdRaw),
-    title,
-    artist: artist || "未知歌手",
-    album,
-    durationSec: durationMs !== undefined && durationMs > 0 ? Math.round(durationMs / 1000) : undefined,
+    song: {
+      encryptedId,
+      originalId: String(originalIdRaw),
+      title,
+      artist: artist || "未知歌手",
+      album,
+      durationSec: durationMs !== undefined && durationMs > 0 ? Math.round(durationMs / 1000) : undefined,
+    },
+    playable,
   };
+}
+
+/** 兼容旧签名：只取可播放的候选 */
+export function parseNcmSong(item: Record<string, unknown>): NcmSong | null {
+  const { song, playable } = parseNcmSongItem(item);
+  return playable ? song : null;
 }
 
 /** 宽松解析 CLI 的 stdout JSON（容忍前后噪音行），失败返回 null */
@@ -343,20 +365,36 @@ export function createNcmClient(runner: NcmRunner): NcmClient {
     },
 
     async searchSong(keyword, limit = 10) {
+      return (await this.searchSongVerbose(keyword, limit)).songs;
+    },
+
+    async searchSongVerbose(keyword, limit = 10) {
       const out = await run(["search", "song", "--keyword", keyword], 30000);
       const arr = extractSongArray(out);
-      return arr
-        .map(parseNcmSong)
-        .filter((s): s is NcmSong => s !== null)
-        .slice(0, limit);
+      const songs: NcmSong[] = [];
+      const unplayableSongs: NcmSong[] = [];
+      let unplayableCount = 0;
+      for (const item of arr) {
+        const { song, playable } = parseNcmSongItem(item);
+        if (song === null) continue;
+        if (playable) {
+          songs.push(song);
+          if (songs.length >= limit) break;
+        } else {
+          unplayableCount += 1;
+          if (unplayableSongs.length < 10) unplayableSongs.push(song);
+        }
+      }
+      return { songs, unplayableCount, unplayableSongs, total: arr.length };
     },
 
     async playSong(song) {
       await run(["play", "--song", ...playerArgs, "--encrypted-id", song.encryptedId, "--original-id", song.originalId], 30000);
     },
 
+    // queue add 不接受 --player（实测 unknown option）；后端继承当前 play 会话
     async queueAdd(song, opts) {
-      const args = ["queue", "add", ...playerArgs, "--encrypted-id", song.encryptedId, "--original-id", song.originalId];
+      const args = ["queue", "add", "--encrypted-id", song.encryptedId, "--original-id", song.originalId];
       if (opts?.next === true) args.push("--next");
       await run(args, 30000);
     },

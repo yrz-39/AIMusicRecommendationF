@@ -230,42 +230,59 @@ export default function App(): React.ReactElement {
     void requestRecommend({ excludeTrackIds: exclude, sessionId: result.sessionId });
   }, [result, requestRecommend]);
 
-  /** 「▶ 在网易云播放」：按歌单顺序逐条入队（首曲清队列并播放，其余追加），ncm-cli 解析每曲的真实 ID */
+  /** 「▶ 播放歌单」：按歌单顺序逐条入队（首曲清队列并播放，其余追加），ncm-cli 解析每曲的真实 ID */
   const [playProgress, setPlayProgress] = useState<{ i: number; n: number } | null>(null);
   const [playNote, setPlayNote] = useState<string | null>(null);
+
+  const queueRequest = useCallback(async (path: string, rec: Recommendation): Promise<void> => {
+    const res = await fetch(`/api/netease/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: rec.track.title,
+        artist: rec.track.artist,
+        durationSec: rec.track.durationSec,
+        netease: rec.track.netease ?? {},
+      }),
+    });
+    const data = (await res.json()) as { ok?: boolean; error?: string };
+    if (!res.ok || data.ok !== true) throw new Error(data.error ?? "播放失败");
+  }, []);
 
   const playNeteasePlaylist = useCallback(async (): Promise<void> => {
     if (playlist === null || playProgress !== null) return;
     const tracks = playlist.playlist.tracks;
     setPlayNote(null);
-    const failed: string[] = [];
+    const failed: Array<{ title: string; reason: string }> = [];
     for (let i = 0; i < tracks.length; i++) {
       setPlayProgress({ i: i + 1, n: tracks.length });
       const rec = tracks[i];
       if (rec === undefined) continue;
       try {
-        const res = await fetch(`/api/netease/${i === 0 ? "queue-start" : "queue-add"}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title: rec.track.title,
-            artist: rec.track.artist,
-            netease: rec.track.netease ?? {},
-          }),
-        });
-        const data = (await res.json()) as { ok?: boolean; error?: string };
-        if (!res.ok || data.ok !== true) failed.push(`《${rec.track.title}》：${data.error ?? "播放失败"}`);
+        await queueRequest(i === 0 ? "queue-start" : "queue-add", rec);
       } catch (err) {
-        failed.push(`《${rec.track.title}》：${(err as Error).message}`);
+        failed.push({ title: rec.track.title, reason: (err as Error).message });
       }
     }
     setPlayProgress(null);
-    setPlayNote(
-      failed.length === 0
-        ? `已把 ${tracks.length} 首加入播放队列 🎧（通过 ncm-cli 播放器播放；听完可在卡片区评价，网易云补充的歌满意就「＋ 曲库」）`
-        : `已播放入队（${tracks.length - failed.length}/${tracks.length} 成功）。未成功的：${failed.join("；")}`,
-    );
-  }, [playlist, playProgress]);
+    if (failed.length === 0) {
+      setPlayNote(`已把 ${tracks.length} 首加入播放队列 🎧（ncm 播放器播放；网易云补充的歌听完可「＋ 曲库」）`);
+    } else {
+      // 摘要化：只列前 3 条，其余归并计数，避免长墙
+      const shown = failed.slice(0, 3).map((f) => `《${f.title}》：${f.reason}`);
+      const rest = failed.length > 3 ? `……等共 ${failed.length} 首未成功` : "";
+      setPlayNote(`已入队 ${tracks.length - failed.length}/${tracks.length} 首。未成功的：${shown.join("；")}${rest}`);
+    }
+  }, [playlist, playProgress, queueRequest]);
+
+  /** 补位单曲试听：直接切到这首歌（会替换当前队列） */
+  const auditionTrack = useCallback(
+    async (rec: Recommendation): Promise<void> => {
+      await queueRequest("queue-start", rec);
+      setPlayNote(`正在试听：《${rec.track.title}》 - ${rec.track.artist}（ncm 播放器）`);
+    },
+    [queueRequest],
+  );
 
   /** 补位歌曲入库：直接走通用导入（服务端会做 songKey 去重） */
   const addToLibrary = useCallback(
@@ -395,6 +412,7 @@ export default function App(): React.ReactElement {
                   onFeedback={sendFeedback}
                   supplement={playlist.supplementIds?.includes(rec.track.id) === true}
                   onAddToLibrary={addToLibrary}
+                  onAudition={auditionTrack}
                 />
               ))}
               {playlist.playlist.shortfallSec > 60 && (

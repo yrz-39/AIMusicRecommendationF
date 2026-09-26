@@ -314,27 +314,112 @@ export function createApp({
   /** 曲库推荐已填的时长（秒）——用于判断歌单缺口是否值得触发全库补位 */
   const playlistBudgetUsed = (recs: Recommendation[]): number => recs.reduce((sum, r) => sum + r.track.durationSec, 0);
 
-  /** 把播放请求条目解析为 ncm-cli 歌曲对象：已有加密/原始 ID 直接用，否则按「歌名 歌手」搜索匹配 */
-  const resolvePlaybackSong = async (item: { title: string; artist: string; netease?: { encryptedId?: unknown; originalId?: unknown } }): Promise<NcmSong> => {
+  /** 去掉歌名里的括号段（翻自/伴奏/副标题等）——搜索兜底关键词用 */
+  const cleanTitle = (t: string): string =>
+    t.replace(/[（(【\[][^）)】\]]*[）)】\]]/g, " ").replace(/\s+/g, " ").trim();
+
+  /** 把播放请求条目解析为 ncm-cli 歌曲对象。
+   *  策略：两级关键词（歌名+歌手 / 清理括号后的歌名）聚合可播候选，
+   *  分层匹配：歌名+歌手全等 > 歌名等+歌手有交集 > 歌名等 > 互为包含(≥4字)+歌手交集 > 歌手等+时长±5s。
+   *  宁可不播不播错；三类失败如实区分（搜不到 / 搜到但全不可播放 / 没有可靠匹配）。 */
+  const resolvePlaybackSong = async (item: {
+    title: string;
+    artist: string;
+    durationSec?: unknown;
+    netease?: { encryptedId?: unknown; originalId?: unknown };
+  }): Promise<NcmSong> => {
     if (ncm === null) throw new Error("ncm-cli 不可用");
     const enc = typeof item.netease?.encryptedId === "string" ? item.netease.encryptedId : undefined;
     const orig = typeof item.netease?.originalId === "string" ? item.netease.originalId : undefined;
     if (enc !== undefined && enc !== "" && orig !== undefined && orig !== "") {
       return { encryptedId: enc, originalId: orig, title: item.title, artist: item.artist };
     }
-    const songs = await ncm.searchSong(`${item.title} ${item.artist}`, 10);
-    if (songs.length === 0) throw new Error(`网易云搜索无结果：《${item.title}》`);
+
     const norm = (s: string): string =>
       s.toLowerCase().replace(/\s+/g, "").replace(/[（(【\[].*?[)）】\]]/g, "").replace(/[·、，,。.\-—~！!？?：:'’"]/g, "");
     const wantTitle = norm(item.title);
     const wantArtist = norm(item.artist);
-    // 匹配优先级：歌名+歌手全等 > 歌名全等 > 歌名包含（长度达标）。宁可不播不播错。
-    const byKey = (t: string, a: string): boolean => norm(t) === wantTitle && norm(a) === wantArtist;
+    const wantDuration = typeof item.durationSec === "number" && item.durationSec > 0 ? item.durationSec : undefined;
+    const artistTokens = wantArtist.split("/").filter((t) => t !== "");
+
+    // 关键词降级序列：歌名+歌手 → 文字分段（Kiss The Rain 비를 맞다 → "Kiss The Rain"，
+    // 中/韩/假名与拉丁的书写切换处常是副标题起点）→ 清理括号后的歌名
+    const scriptRuns = (t: string): string[] => {
+      const runs: string[] = [];
+      let cur = "";
+      let curLatin: boolean | null = null;
+      const isLatin = (ch: string): boolean => /[a-zA-Z0-9]/.test(ch);
+      for (const ch of t) {
+        if (ch === " ") {
+          if (cur !== "") cur += ch;
+          continue;
+        }
+        const lat = isLatin(ch);
+        if (curLatin === null || lat === curLatin) {
+          cur += ch;
+        } else {
+          runs.push(cur.trim());
+          cur = ch;
+        }
+        curLatin = lat;
+      }
+      if (cur.trim() !== "") runs.push(cur.trim());
+      return runs.filter((r) => r.length >= 3);
+    };
+    const keywords = [`${item.title} ${item.artist}`, ...scriptRuns(item.title), cleanTitle(item.title)]
+      .map((k) => k.trim())
+      .filter((k, i, arr) => k !== "" && arr.indexOf(k) === i);
+
+    // 聚合各级搜索：可播候选进池；不可播的原曲样本保留用于版权判定
+    let pool: NcmSong[] = [];
+    let unplayableCount = 0;
+    let unplayableSongs: NcmSong[] = [];
+    for (const kw of keywords) {
+      try {
+        const r = await ncm.searchSongVerbose(kw, 15);
+        unplayableCount = Math.max(unplayableCount, r.unplayableCount);
+        if (r.unplayableSongs.length > 0) {
+          unplayableSongs = [...unplayableSongs, ...r.unplayableSongs.filter((s) => !unplayableSongs.some((u) => u.originalId === s.originalId))].slice(0, 10);
+        }
+        if (r.songs.length > 0) {
+          pool = [...pool, ...r.songs.filter((s) => !pool.some((p) => p.originalId === s.originalId))];
+          if (pool.length >= 5) break;
+        }
+      } catch {
+        continue; // 单级关键词失败不放弃
+      }
+    }
+
+    const copyrightHit = unplayableSongs.find((s) => norm(s.title) === wantTitle && norm(s.artist) === wantArtist);
+
+    const artistOverlap = (s: NcmSong): boolean => {
+      const a = norm(s.artist);
+      return artistTokens.some((t) => t !== "" && a.includes(t)) || (wantArtist !== "" && a === wantArtist);
+    };
+    const titleEq = (s: NcmSong): boolean => norm(s.title) === wantTitle;
+    const contains = (a: string, b: string): boolean => a.includes(b) || b.includes(a);
+    const durationClose = (s: NcmSong): boolean =>
+      wantDuration !== undefined && s.durationSec !== undefined && Math.abs(s.durationSec - wantDuration) <= 5;
+
     const song =
-      songs.find((s) => byKey(s.title, s.artist)) ??
-      songs.find((s) => norm(s.title) === wantTitle) ??
-      songs.find((s) => norm(s.title).includes(wantTitle) && wantTitle.length >= 2);
-    if (song === undefined) throw new Error(`没找到可靠匹配：《${item.title}》${item.artist}（搜索结果都不像）`);
+      pool.find((s) => titleEq(s) && norm(s.artist) === wantArtist) ??
+      pool.find((s) => titleEq(s) && artistOverlap(s)) ??
+      pool.find(titleEq) ??
+      pool.find((s) => wantTitle.length >= 4 && contains(norm(s.title), wantTitle) && artistOverlap(s)) ??
+      pool.find((s) => artistOverlap(s) && durationClose(s));
+    if (song === undefined) {
+      if (copyrightHit !== undefined) {
+        throw new Error(`《${copyrightHit.title}》在网易云侧当前不可播放（无版权/仅 VIP）`);
+      }
+      if (pool.length === 0 && unplayableCount > 0) {
+        throw new Error(`搜到 ${unplayableCount} 首但均不可播放（无版权/仅 VIP），网易云侧放不了这首`);
+      }
+      throw new Error(
+        pool.length === 0
+          ? `网易云搜索无结果：《${item.title}》`
+          : `没找到可靠匹配：《${item.title}》${item.artist}（可播的 ${pool.length} 首里没有对得上的）`,
+      );
+    }
     return song;
   };
 
@@ -348,11 +433,16 @@ export function createApp({
       } catch {
         return c.json({ error: "请求体必须是 JSON" }, 400);
       }
-      const item = (body ?? {}) as { title?: unknown; artist?: unknown; netease?: Record<string, unknown> };
+      const item = (body ?? {}) as { title?: unknown; artist?: unknown; durationSec?: unknown; netease?: Record<string, unknown> };
       if (typeof item.title !== "string" || item.title.trim() === "" || typeof item.artist !== "string") {
         return c.json({ error: "缺少 title/artist" }, 400);
       }
-      const playItem = { title: item.title.trim(), artist: item.artist.trim(), netease: item.netease };
+      const playItem = {
+        title: item.title.trim(),
+        artist: item.artist.trim(),
+        durationSec: typeof item.durationSec === "number" ? item.durationSec : undefined,
+        netease: item.netease,
+      };
       try {
         const song = await resolvePlaybackSong(playItem);
         if (mode === "start") {

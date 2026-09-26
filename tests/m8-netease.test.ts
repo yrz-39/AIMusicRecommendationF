@@ -148,7 +148,7 @@ describe("ncm-cli 适配层：解析", () => {
     expect(last(calls)).toEqual(["play", "--song", "--player", "mpv", "--encrypted-id", "E", "--original-id", "1"]);
 
     await client.queueAdd({ encryptedId: "E", originalId: "2", title: "t", artist: "a" }, { next: true });
-    expect(last(calls)).toEqual(["queue", "add", "--player", "mpv", "--encrypted-id", "E", "--original-id", "2", "--next"]);
+    expect(last(calls)).toEqual(["queue", "add", "--encrypted-id", "E", "--original-id", "2", "--next"]);
 
     await client.queueClear();
     expect(last(calls)).toEqual(["queue", "clear"]);
@@ -238,12 +238,14 @@ function stubNcm(overrides: Partial<NcmClient> = {}): NcmClient & { calls: strin
     configStatus: async () => ({ appIdSet: true, player: "netease-client" }),
     setCredentials: async (appId, privateKey) => void calls.push(["setCredentials", appId, privateKey]),
     loginCheck: async () => ({ loggedIn: true, message: "已登录" }),
-    searchSong: async (keyword) => {
+    searchSong: async (keyword) => (await base.searchSongVerbose(keyword)).songs,
+    searchSongVerbose: async (keyword, limit = 10) => {
       calls.push(["search", keyword]);
-      return [
+      const songs = [
         { encryptedId: "ENC_A", originalId: "101", title: "晴天", artist: "周杰伦", durationSec: 269 },
         { encryptedId: "ENC_B", originalId: "102", title: "晴空", artist: "某人", durationSec: 200 },
-      ];
+      ].slice(0, limit);
+      return { songs, unplayableCount: 0, unplayableSongs: [], total: songs.length };
     },
     playSong: async (s) => void calls.push(["play", s.originalId]),
     queueAdd: async (s) => void calls.push(["queueAdd", s.originalId]),
@@ -289,7 +291,9 @@ describe("API：网易云播放与遥控", () => {
   });
 
   it("搜索结果都不像时宁可拒绝（502）", async () => {
-    const ncm = stubNcm({ searchSong: async () => [{ encryptedId: "E", originalId: "9", title: "完全无关的歌", artist: "别人" }] });
+    const ncm = stubNcm({
+      searchSongVerbose: async () => ({ songs: [{ encryptedId: "E", originalId: "9", title: "完全无关的歌", artist: "别人", durationSec: 200 }], unplayableCount: 0, unplayableSongs: [], total: 1 }),
+    });
     const app = createApp({ store: new MemoryStore(), ncm });
     const res = await app.request("/api/netease/queue-add", {
       method: "POST",
