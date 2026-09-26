@@ -11,6 +11,7 @@ import { fetchNeteasePlaylist, testNeteaseCookie } from "../core/import/netease.
 import type { NcmClient, NcmSong } from "../core/netease/ncmCli.js";
 import { evaluateFillCandidates, generateSearchQueries, type FillCandidate } from "../core/llm/playlistFill.js";
 import { detectNowPlaying, type NowPlaying } from "../core/native/nowPlaying.js";
+import { sendPauseHotkey } from "../core/netease/pauseHotkey.js";
 import { validateImportRows, songKey } from "../core/import/validate.js";
 import { importCsv } from "../core/import/csv.js";
 import { getSampleLibrary } from "../sample/sampleLibrary.js";
@@ -50,6 +51,10 @@ export interface AppDeps {
   ncm?: NcmClient | null;
   /** 正在播放检测（测试注入，避免依赖宿主机真实的媒体会话）；默认 detectNowPlaying */
   detectPlaying?: () => Promise<NowPlaying>;
+  /** 网易云客户端全局暂停快捷键（交付开始时模拟按压，避免客户端与 mpv 两路声音叠放）；空串=不模拟 */
+  clientPauseHotkey?: string;
+  /** 暂停快捷键模拟实现（测试注入） */
+  sendPauseHotkeyImpl?: (combo: string) => Promise<void>;
 }
 
 /** 首次运行且曲库为空时导入示例库（通过持久化 flag 保证只执行一次） */
@@ -77,6 +82,8 @@ export function createApp({
   fetchImpl,
   ncm = null,
   detectPlaying = detectNowPlaying,
+  clientPauseHotkey = "Ctrl+P",
+  sendPauseHotkeyImpl = sendPauseHotkey,
 }: AppDeps): Hono {
   const app = new Hono();
 
@@ -123,7 +130,12 @@ export function createApp({
         cookieMasked: settings.neteaseCookie ? maskSecret(settings.neteaseCookie) : null,
       },
       settingsPath: settingsPath ?? null,
-      ncm: { available: ncm !== null, appIdSet: ncmStatus?.appIdSet ?? false, player: ncmStatus?.player ?? null },
+      ncm: {
+        available: ncm !== null,
+        appIdSet: ncmStatus?.appIdSet ?? false,
+        player: ncmStatus?.player ?? null,
+        pauseHotkey: clientPauseHotkey,
+      },
     };
   };
 
@@ -454,6 +466,17 @@ export function createApp({
       const trackId = typeof item.trackId === "string" ? item.trackId : undefined;
       try {
         const song = await resolvePlaybackSong(playItem);
+        // 交付开始（或无会话自愈直播）前：若桌面客户端正在放歌，模拟全局暂停快捷键，
+        // 避免 mpv 与客户端两路声音叠放。失败静默——顶多重叠，不阻塞交付。
+        const pauseClient = async (): Promise<void> => {
+          if (clientPauseHotkey.trim() === "") return;
+          try {
+            const desktop = await detectPlaying();
+            if (desktop.playing) await sendPauseHotkeyImpl(clientPauseHotkey);
+          } catch {
+            /* 忽略 */
+          }
+        };
         // 解析结果回写曲库：同一首歌下次入队跳过搜索（首次慢、后续快）
         if (trackId !== undefined && item.netease?.encryptedId === undefined) {
           try {
@@ -473,6 +496,7 @@ export function createApp({
           }
         }
         if (mode === "start") {
+          await pauseClient();
           await ncm.queueClear();
           await ncm.playSong(song);
         } else {
@@ -482,6 +506,7 @@ export function createApp({
             // 首曲失败时播放会话不存在，queue add 全体报「无播放进程」：
             // 自愈为清队列并直接播放这一首（第一首成功的歌成为队列起点）
             if (!(addErr as Error).message.includes("无播放进程")) throw addErr;
+            await pauseClient();
             await ncm.queueClear();
             await ncm.playSong(song);
             return c.json({ ok: true, status: "playing", matchedTitle: song.title, matchedArtist: song.artist });

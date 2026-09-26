@@ -426,8 +426,8 @@ describe("API：网易云播放与遥控", () => {
     const ncm = stubNcm();
     const app = createApp({ store: new MemoryStore(), ncm });
     const get = await app.request("/api/settings");
-    const snapshot = (await get.json()) as { ncm: { available: boolean; appIdSet: boolean; player: string | null } };
-    expect(snapshot.ncm).toEqual({ available: true, appIdSet: true, player: "netease-client" });
+    const snapshot = (await get.json()) as { ncm: { available: boolean; appIdSet: boolean; player: string | null; pauseHotkey: string } };
+    expect(snapshot.ncm).toEqual({ available: true, appIdSet: true, player: "netease-client", pauseHotkey: "Ctrl+P" });
 
     const put = await app.request("/api/settings", {
       method: "PUT",
