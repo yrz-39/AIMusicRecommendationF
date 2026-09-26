@@ -88,12 +88,7 @@ body {
   white-space: nowrap;
 }
 
-.lib-count a {
-  color: var(--text-dim);
-  text-decoration: none;
-  border-bottom: 1px dashed var(--text-faint);
-  cursor: pointer;
-}
+/* pill 链接样式在下方「顶栏链接」段落统一定义 */
 
 /* ---------- 选项卡 ---------- */
 .tabs {
@@ -960,6 +955,45 @@ body.mini-mode .help-list {
   min-width: 34px;
   text-align: center;
   font-size: 14px;
+}
+
+/* ncm 播放器来源的播放条：蓝紫色调区分于桌面客户端检测 */
+.np-bar.ncm {
+  background: linear-gradient(90deg, rgba(155, 143, 201, 0.16), rgba(232, 101, 127, 0.08));
+}
+
+/* ---------- 顶栏链接（小窗/音乐库/设置/帮助）---------- */
+.lib-count a {
+  display: inline-block;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.lib-count a:hover {
+  color: var(--accent);
+  border-color: rgba(232, 101, 127, 0.45);
+  background: var(--accent-soft);
+}
+
+/* ---------- 曲库来源标记 ---------- */
+.library-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+  background: var(--bg-soft);
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-left: 8px;
+  vertical-align: 2px;
 }
 
 .onboard-actions button {

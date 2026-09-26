@@ -370,8 +370,9 @@ export function SettingsModal({ onClose, onSaved }: SettingsModalProps): React.R
               <p className="settings-hint">
                 三步开启：① 安装 ncm-cli（<code className="help-path">npm install -g @music163/ncm-cli</code>）；
                 ② 到网易云音乐开放平台（developer.music.163.com）个人入驻，把拿到的 AppId / PrivateKey 填这里；
-                ③ 终端运行 <code className="help-path">ncm-cli login</code> 扫码登录，并建议运行{" "}
-                <code className="help-path">ncm-cli configure</code> 把播放器选为「网易云客户端」。
+                ③ 终端运行 <code className="help-path">ncm-cli login</code> 扫码登录。
+                歌单通过 ncm-cli 内置播放器（mpv，需安装）播放；Windows 版网易云客户端暂不支持官方唤起
+                （orpheus 仅 macOS），macOS 用户可设置环境变量 STUDYMOOD_NCM_PLAYER=orpheus 改为驱动客户端。
               </p>
               <div className="settings-grid">
                 <label>

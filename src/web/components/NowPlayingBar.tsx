@@ -5,8 +5,11 @@ interface NowPlayingCurrent {
   playing: boolean;
   title?: string;
   artist?: string;
-  source?: string;
+  /** ncm = 应用内 ncm-cli 播放器（Windows 上歌单交付的实际后端） */
+  source?: "netease" | "qq" | "unknown" | "ncm";
   track: Track | null;
+  /** ncm 队列信息：暂停时队列仍在，正在播放条要保持可见才能恢复 */
+  ncmQueue?: { queueLength: number };
 }
 
 interface LearnResponse {
@@ -16,17 +19,17 @@ interface LearnResponse {
 }
 
 /**
- * 正在播放条：轮询桌面客户端的播放状态（网易云/QQ 音乐窗口标题），
- * 检测到播放且能在曲库中匹配到曲目时，提供两个动作：
- * 「教它」（自然语言特征学习）与「基于这首歌推荐」。
- * 没有检测到播放时整条隐藏，不打扰；轮询失败静默降级。
+ * 正在播放条：轮询桌面客户端的播放状态（SMTC/窗口标题 + ncm-cli 播放器兜底）。
+ * - 桌面网易云/QQ 在放：显示来源并给「教它」「基于这首歌推荐」（此时 ncm 遥控不显示——它控制的是自己的队列）；
+ * - ncm 播放器在放（歌单交付）：显示曲目并给 ⏮⏯⏭ 遥控；暂停后队列还在，条保持可见可恢复。
+ * 没有任何播放时整条隐藏，不打扰；轮询失败静默降级。
  */
 export function NowPlayingBar({
   onSimilar,
   ncmControls = false,
 }: {
   onSimilar: (trackId: string, track: Track) => void;
-  /** ncm-cli 可用时显示播放遥控（暂停/继续/切歌），直接控制网易云客户端 */
+  /** ncm-cli 可用时，ncm 播放器来源的条目显示播放遥控 */
   ncmControls?: boolean;
 }): React.ReactElement | null {
   const [state, setState] = useState<NowPlayingCurrent | null>(null);
@@ -38,21 +41,6 @@ export function NowPlayingBar({
   const [ctlBusy, setCtlBusy] = useState(false);
   const timerRef = useRef<number | null>(null);
   const disposedRef = useRef(false);
-
-  const sendControl = useCallback(async (action: "pause" | "resume" | "next" | "prev"): Promise<void> => {
-    setCtlBusy(true);
-    try {
-      await fetch("/api/netease/control", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-    } catch {
-      /* 遥控失败静默，状态条下次轮询自会纠正 */
-    } finally {
-      setCtlBusy(false);
-    }
-  }, []);
 
   const poll = useCallback(async (): Promise<void> => {
     try {
@@ -115,22 +103,43 @@ export function NowPlayingBar({
     }
   }, [state?.track, onSimilar]);
 
-  // 没检测到播放：整条隐藏
-  if (state === null || !state.playing) return null;
+  const sendControl = useCallback(async (action: "pause" | "resume" | "next" | "prev"): Promise<void> => {
+    setCtlBusy(true);
+    try {
+      await fetch("/api/netease/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+    } catch {
+      /* 遥控失败静默，状态条下次轮询自会纠正 */
+    } finally {
+      setCtlBusy(false);
+    }
+  }, []);
+
+  // ncm 队列暂停中（playing=false 但队列还在）：条保持可见，可恢复
+  const ncmPaused = state !== null && !state.playing && state.source === "ncm" && (state.ncmQueue?.queueLength ?? 0) > 0;
+  // 没有任何播放：整条隐藏
+  if (state === null || (!state.playing && !ncmPaused)) return null;
 
   const track = state.track;
+  const isNcmSource = state.source === "ncm";
+  const showControls = ncmControls && isNcmSource;
   return (
-    <section className="np-bar">
+    <section className={isNcmSource ? "np-bar ncm" : "np-bar"}>
       <div className="np-main">
-        <span className="np-emoji">🎵</span>
+        <span className="np-emoji">{state.playing ? "🎵" : "⏸"}</span>
         <span className="np-text">
-          正在播放：<strong>《{state.title}》</strong>
-          {state.artist !== undefined && <span className="np-artist"> - {state.artist}</span>}
-          {track === null && (
+          {state.playing ? "正在播放：" : "已暂停："}
+          <strong>《{state.title}》</strong>
+          {state.artist !== undefined && state.artist !== "" && <span className="np-artist"> - {state.artist}</span>}
+          {isNcmSource && <span className="np-hint">（ncm 播放器）</span>}
+          {!isNcmSource && track === null && (
             <span className="np-hint">（不在曲库中，去「音乐库」添加后才能教它）</span>
           )}
         </span>
-        {ncmControls && (
+        {showControls && (
           <span className="np-actions np-ctl">
             <button className="ghost-btn np-btn" title="上一首" disabled={ctlBusy} onClick={() => void sendControl("prev")}>
               ⏮

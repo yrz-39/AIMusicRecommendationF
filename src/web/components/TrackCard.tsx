@@ -51,7 +51,11 @@ export function TrackCard(props: {
         <div className="track-meta">
           <div className="track-title">
             {track.title}
-            {supplement && <span className="supplement-badge">网易云补充</span>}
+            {supplement ? (
+              <span className="supplement-badge">网易云补充 · 未入库</span>
+            ) : (
+              <span className="library-badge">曲库</span>
+            )}
           </div>
           <div className="track-sub">
             {track.artist}
@@ -120,8 +124,7 @@ export function TrackCard(props: {
           <button className="fb-btn" disabled={adding || added} onClick={() => void addToLibrary()}>
             {added ? "✓ 已入库" : adding ? "入库中…" : "＋ 曲库"}
           </button>
-        )}
-        <button className="fb-btn" onClick={() => void copySong()}>
+        )}        <button className="fb-btn" onClick={() => void copySong()}>
           {copied ? "✓ 已复制" : "⧉ 复制"}
         </button>
         <a className="fb-btn netease-link" href={neteaseSearchUrl(track)} target="_blank" rel="noreferrer">

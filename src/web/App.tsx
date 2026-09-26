@@ -262,7 +262,7 @@ export default function App(): React.ReactElement {
     setPlayProgress(null);
     setPlayNote(
       failed.length === 0
-        ? `已把 ${tracks.length} 首加入网易云播放队列 🎧`
+        ? `已把 ${tracks.length} 首加入播放队列 🎧（通过 ncm-cli 播放器播放；听完可在卡片区评价，网易云补充的歌满意就「＋ 曲库」）`
         : `已播放入队（${tracks.length - failed.length}/${tracks.length} 成功）。未成功的：${failed.join("；")}`,
     );
   }, [playlist, playProgress]);
@@ -372,14 +372,15 @@ export default function App(): React.ReactElement {
                 </h2>
                 {appInfo?.ncmAvailable === true && (
                   <button className="primary-btn play-ncm-btn" disabled={playProgress !== null} onClick={() => void playNeteasePlaylist()}>
-                    {playProgress !== null ? `正在入队 ${playProgress.i}/${playProgress.n}…` : "▶ 在网易云播放"}
+                    {playProgress !== null ? `正在入队 ${playProgress.i}/${playProgress.n}…` : "▶ 播放歌单"}
                   </button>
                 )}
               </div>
               {playNote !== null && <div className="play-note">{playNote}</div>}
               {playlist.supplements !== null && playlist.supplements !== undefined && playlist.supplements.added > 0 && (
                 <div className="supplement-note">
-                  ☁️ 曲库不够，已从网易云全库补位 {playlist.supplements.added} 首（AI 逐首评估过是否符合当前状态），满意可点「＋ 曲库」收进曲库。
+                  ☁️ 曲库不够，已从网易云全库补位 {playlist.supplements.added} 首（AI 逐首评估过是否符合当前状态）。
+                  标「网易云补充 · 未入库」的就是它们：先听，满意点「＋ 曲库」收进曲库，❤/✕ 评价未入库时也会记录、入库后自动生效。
                 </div>
               )}
               {playlist.supplements !== null && playlist.supplements !== undefined && playlist.supplements.note !== null && (

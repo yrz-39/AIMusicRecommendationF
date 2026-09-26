@@ -63,6 +63,42 @@ describe("ncm-cli 适配层：解析", () => {
     expect(extractSongArray(null)).toHaveLength(0);
   });
 
+  it("0.1.7 真实输出：data.records + id 为 32 位 HEX 加密 ID + playFlag 过滤", () => {
+    const real = {
+      code: 200,
+      subCode: null,
+      message: null,
+      data: {
+        recordCount: 247,
+        records: [
+          {
+            originalId: 3440441479,
+            id: "0E5C5C80289D95205284FBB40550D7F7",
+            name: "晴天",
+            duration: 112373,
+            playFlag: true,
+            noCopyrightRcmd: null,
+            artists: [{ originalId: 122200643, id: "BA438474200324296E8FD5AA488B53F4", name: "Jay" }],
+            album: { originalId: 400164559, id: "D1F3F8492A82CFC9FED353E91F6673AD", name: "晴天" },
+          },
+          {
+            originalId: 999,
+            id: "AAAABBBBCCCCDDDD1111222233334444",
+            name: "无版权歌",
+            duration: 100000,
+            playFlag: true,
+            noCopyrightRcmd: { type: 1 },
+            artists: [{ name: "X" }],
+          },
+          { originalId: 998, id: "AAAABBBBCCCCDDDD1111222233334445", name: "不可播放", duration: 100000, playFlag: false, artists: [{ name: "X" }] },
+        ],
+      },
+    };
+    const songs = extractSongArray(real).map(parseNcmSong).filter((x): x is NcmSong => x !== null);
+    expect(songs).toHaveLength(1); // 无版权与不可播放的都被过滤
+    expect(songs[0]).toMatchObject({ encryptedId: "0E5C5C80289D95205284FBB40550D7F7", originalId: "3440441479", title: "晴天", artist: "Jay", durationSec: 112 });
+  });
+
   it("parseJsonOutput：容忍噪音前后缀", () => {
     expect(parseJsonOutput('前缀日志\n{"a":1}\n后缀')).toEqual({ a: 1 });
     expect(parseJsonOutput("不是 JSON")).toBeNull();
@@ -109,10 +145,10 @@ describe("ncm-cli 适配层：解析", () => {
     expect(songs[0]).toMatchObject({ encryptedId: "ENC1", originalId: "111", title: "晴天" });
 
     await client.playSong({ encryptedId: "E", originalId: "1", title: "t", artist: "a" });
-    expect(last(calls)).toEqual(["play", "--song", "--encrypted-id", "E", "--original-id", "1"]);
+    expect(last(calls)).toEqual(["play", "--song", "--player", "mpv", "--encrypted-id", "E", "--original-id", "1"]);
 
     await client.queueAdd({ encryptedId: "E", originalId: "2", title: "t", artist: "a" }, { next: true });
-    expect(last(calls)).toEqual(["queue", "add", "--encrypted-id", "E", "--original-id", "2", "--next"]);
+    expect(last(calls)).toEqual(["queue", "add", "--player", "mpv", "--encrypted-id", "E", "--original-id", "2", "--next"]);
 
     await client.queueClear();
     expect(last(calls)).toEqual(["queue", "clear"]);
@@ -127,6 +163,14 @@ describe("ncm-cli 适配层：解析", () => {
     // 命令失败 → 抛错给上层降级
     const bad = createNcmClient(async () => ({ code: 1, stdout: "", stderr: "boom" }) as NcmRunResult);
     await expect(bad.playSong({ encryptedId: "E", originalId: "1", title: "t", artist: "a" })).rejects.toThrow("boom");
+
+    // CLI 业务失败（如未登录）exit 0 但 success:false → 同样抛错
+    const unauth = createNcmClient(async () => ({
+      code: 0,
+      stdout: JSON.stringify({ success: false, message: "未登录，请执行 ncm-cli login 完成登录" }),
+      stderr: "",
+    }));
+    await expect(unauth.searchSong("x")).rejects.toThrow("未登录");
   });
 
   it("config list 未配置时 appIdSet=false（不把『(未配置)』当值）", async () => {
@@ -286,6 +330,53 @@ describe("API：网易云播放与遥控", () => {
     expect(noNcm.status).toBe(400);
   });
 
+  it("now-playing/current：桌面无信号时回落 ncm 播放器状态并匹配曲库", async () => {
+    const store = new MemoryStore();
+    await store.saveTracks([{ id: "a", title: "晴天", artist: "Jay", durationSec: 269, energy: 0.5 }]);
+    const ncm = stubNcm({
+      state: async () => ({
+        status: "playing",
+        playing: true,
+        raw: { state: { status: "playing", title: "晴天 - Jay", queueLength: 3, position: 1, duration: 100 } },
+      }),
+    });
+    const app = createApp({ store, ncm, detectPlaying: async () => ({ playing: false }) });
+    const res = await app.request("/api/now-playing/current");
+    const data = (await res.json()) as {
+      playing: boolean;
+      source: string;
+      title: string;
+      artist: string;
+      ncmQueue: { queueLength: number };
+      track: { id: string } | null;
+    };
+    expect(data.playing).toBe(true);
+    expect(data.source).toBe("ncm");
+    expect(data.title).toBe("晴天");
+    expect(data.artist).toBe("Jay");
+    expect(data.ncmQueue).toEqual({ queueLength: 3 });
+    expect(data.track?.id).toBe("a"); // 标题/歌手解析后与曲库匹配上
+  });
+
+  it("now-playing/current：ncm 暂停但队列非空 → 保持可见（playing=false + 队列信息）", async () => {
+    const ncm = stubNcm({
+      state: async () => ({
+        status: "stopped",
+        playing: false,
+        raw: { state: { status: "stopped", title: "晴天 - Jay", queueLength: 2, position: 0, duration: 100 } },
+      }),
+    });
+    const app = createApp({ store: new MemoryStore(), ncm, detectPlaying: async () => ({ playing: false }) });
+    const data = (await (await app.request("/api/now-playing/current")).json()) as {
+      playing: boolean;
+      source: string;
+      ncmQueue?: { queueLength: number };
+    };
+    expect(data.playing).toBe(false);
+    expect(data.source).toBe("ncm");
+    expect(data.ncmQueue?.queueLength).toBe(2);
+  });
+
   it("settings 含 ncm 段；PUT ncm 凭证转写 setCredentials；test-ncm 汇总三查", async () => {
     const ncm = stubNcm();
     const app = createApp({ store: new MemoryStore(), ncm });
@@ -319,6 +410,28 @@ describe("API：网易云播放与遥控", () => {
     const d2 = (await r2.json()) as { ok: boolean; appIdSet: boolean };
     expect(d2.ok).toBe(false);
     expect(d2.appIdSet).toBe(true);
+  });
+});
+
+describe("API：未入库补位曲目的反馈", () => {
+  it("nes- 前缀曲目未入库也可记录反馈；普通未知 id 仍 404", async () => {
+    const store = new MemoryStore();
+    const app = createApp({ store });
+    const ok = await app.request("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId: "nes-901", type: "like" }),
+    });
+    expect(ok.status).toBe(200);
+    const events = await store.loadFeedback();
+    expect(events[0]?.trackId).toBe("nes-901");
+
+    const bad = await app.request("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId: "no-such", type: "like" }),
+    });
+    expect(bad.status).toBe(404);
   });
 });
 

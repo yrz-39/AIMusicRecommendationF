@@ -10,7 +10,7 @@ import { normalizeGenres } from "../core/import/genreMap.js";
 import { fetchNeteasePlaylist, testNeteaseCookie } from "../core/import/netease.js";
 import type { NcmClient, NcmSong } from "../core/netease/ncmCli.js";
 import { evaluateFillCandidates, generateSearchQueries, type FillCandidate } from "../core/llm/playlistFill.js";
-import { detectNowPlaying } from "../core/native/nowPlaying.js";
+import { detectNowPlaying, type NowPlaying } from "../core/native/nowPlaying.js";
 import { validateImportRows, songKey } from "../core/import/validate.js";
 import { importCsv } from "../core/import/csv.js";
 import { getSampleLibrary } from "../sample/sampleLibrary.js";
@@ -48,6 +48,8 @@ export interface AppDeps {
   fetchImpl?: typeof fetch;
   /** 网易云官方 ncm-cli 客户端（检测到安装时传入）；null = 不可用，「在网易云播放」等联动功能关闭 */
   ncm?: NcmClient | null;
+  /** 正在播放检测（测试注入，避免依赖宿主机真实的媒体会话）；默认 detectNowPlaying */
+  detectPlaying?: () => Promise<NowPlaying>;
 }
 
 /** 首次运行且曲库为空时导入示例库（通过持久化 flag 保证只执行一次） */
@@ -74,6 +76,7 @@ export function createApp({
   settingsPath,
   fetchImpl,
   ncm = null,
+  detectPlaying = detectNowPlaying,
 }: AppDeps): Hono {
   const app = new Hono();
 
@@ -389,12 +392,24 @@ export function createApp({
     }
   });
 
-  /** ncm-cli 播放状态（托盘场景下桌面检测失效时的兜底信号源） */
+  /** ncm-cli 播放状态（正在播放条在无桌面检测信号时的兜底来源 + 遥控依据） */
   app.get("/api/netease/state", async (c) => {
     if (ncm === null) return c.json({ available: false, status: "unknown", playing: false });
     try {
       const s = await ncm.state();
-      return c.json({ available: true, ...s });
+      const raw = (s.raw ?? {}) as { state?: { title?: unknown; queueLength?: unknown } };
+      const st = raw.state ?? {};
+      // mpv 标题形如 "歌名 - 歌手"；按第一个 " - " 拆分供曲库匹配
+      const title = typeof st.title === "string" ? st.title : undefined;
+      const sep = title !== undefined ? title.indexOf(" - ") : -1;
+      return c.json({
+        available: true,
+        status: s.status,
+        playing: s.playing,
+        title: title !== undefined && sep > 0 ? title.slice(0, sep).trim() : title,
+        artist: title !== undefined && sep > 0 ? title.slice(sep + 3).trim() : undefined,
+        queueLength: typeof st.queueLength === "number" ? st.queueLength : 0,
+      });
     } catch (err) {
       return c.json({ available: true, status: "unknown", playing: false, error: (err as Error).message });
     }
@@ -621,7 +636,7 @@ export function createApp({
     return c.json({ imported: result.accepted.length, rejected: result.rejected, ids: result.accepted.map((t) => t.id) });
   });
 
-  app.get("/api/now-playing", async (c) => c.json(await detectNowPlaying()));
+  app.get("/api/now-playing", async (c) => c.json(await detectPlaying()));
 
   /**
    * 网易云公开歌单一键导入：只读匿名接口获取歌名/歌手/专辑/时长，
@@ -845,13 +860,47 @@ export function createApp({
     return c.json({ sessionId: outcome.sessionId, context, parsedBy, recommendations: outcome.recommendations });
   });
 
-  /** 正在播放 + 曲库匹配：检测到播放中的歌后，找到库内对应曲目（找不到则 track 为 null） */
+  /** 正在播放 + 曲库匹配：桌面检测无信号时回落 ncm 播放器（mpv）状态——
+   *  Windows 版网易云客户端不支持官方唤起，歌单交付走 ncm 内置播放器，
+   *  「教它/基于这首歌推荐/遥控」必须能感知它。paused 且队列非空也返回（条不消失才能恢复播放） */
   app.get("/api/now-playing/current", async (c) => {
-    const playing = await detectNowPlaying();
-    if (!playing.playing) return c.json({ playing: false });
-    const tracks = await store.loadTracks();
-    const track = matchPlayingTrack(tracks, playing);
-    return c.json({ ...playing, track: track ?? null });
+    const playing = await detectPlaying();
+    if (playing.playing) {
+      const tracks = await store.loadTracks();
+      const track = matchPlayingTrack(tracks, playing);
+      return c.json({ ...playing, track: track ?? null });
+    }
+    if (ncm !== null) {
+      try {
+        const s = await ncm.state();
+        const raw = (s.raw ?? {}) as { state?: { title?: unknown; queueLength?: unknown } };
+        const st = raw.state ?? {};
+        const title = typeof st.title === "string" ? st.title.trim() : "";
+        const queueLength = typeof st.queueLength === "number" ? st.queueLength : 0;
+        if (s.playing || (queueLength > 0 && title !== "")) {
+          const sep = title.indexOf(" - ");
+          const npTitle = sep > 0 ? title.slice(0, sep).trim() : title;
+          const npArtist = sep > 0 ? title.slice(sep + 3).trim() : undefined;
+          const tracks = await store.loadTracks();
+          const track =
+            npTitle === ""
+              ? null
+              : matchPlayingTrack(tracks, { title: npTitle, artist: npArtist });
+          return c.json({
+            playing: s.playing,
+            title: npTitle,
+            artist: npArtist,
+            source: "ncm",
+            via: "ncm-player",
+            ncmQueue: { queueLength },
+            track: track ?? null,
+          });
+        }
+      } catch {
+        /* ncm 状态查询失败 → 视为无播放 */
+      }
+    }
+    return c.json({ playing: false });
   });
 
   /** 基于正在播放/指定曲目的"找相似"推荐：曲目特征直接构造情境 */
@@ -912,7 +961,11 @@ export function createApp({
 
     const tracks = await store.loadTracks();
     const track = tracks.find((t) => t.id === trackId);
-    if (!track) return c.json({ error: "曲目不存在" }, 404);
+    // 网易云补位曲目（nes- 前缀）允许未入库先评价：若用户之后「＋ 曲库」带入同一 id，
+    // 这份反馈会自动生效（个性化按 trackId 归并，不依赖曲目先存在）
+    if (track === undefined && !trackId.startsWith("nes-")) {
+      return c.json({ error: "曲目不存在" }, 404);
+    }
 
     const sessions = await store.loadSessions();
     const sid = typeof sessionId === "string" && sessionId ? sessionId : undefined;

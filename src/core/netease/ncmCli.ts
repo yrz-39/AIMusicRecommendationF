@@ -61,7 +61,7 @@ export interface NcmClient {
   state(): Promise<NcmState>;
 }
 
-/** 从混合 JSON 里提取歌曲数组（兼容 root 数组 / result.songs / songs / data 等形态） */
+/** 从混合 JSON 里提取歌曲数组（兼容 root 数组 / result.songs / data.records / songs / data 等形态） */
 export function extractSongArray(payload: unknown): Array<Record<string, unknown>> {
   const candidateOf = (v: unknown): Array<Record<string, unknown>> | null => {
     if (!Array.isArray(v)) return null;
@@ -77,7 +77,8 @@ export function extractSongArray(payload: unknown): Array<Record<string, unknown
     const v = obj[key];
     if (Array.isArray(v)) return candidateOf(v) ?? [];
     if (v !== null && typeof v === "object") {
-      const inner = (v as Record<string, unknown>).songs ?? (v as Record<string, unknown>).list;
+      // 0.1.7 真实返回 data: { recordCount, records: [...] }
+      const inner = (v as Record<string, unknown>).songs ?? (v as Record<string, unknown>).records ?? (v as Record<string, unknown>).list;
       const arr = candidateOf(inner);
       if (arr !== null && arr.length > 0) return arr;
     }
@@ -94,12 +95,19 @@ const asIdNum = (v: unknown): number | undefined => {
   return undefined;
 };
 
-/** 单个搜索结果对象 → NcmSong；字段名防御性兼容（artists 数组 / ar 对象 / artist 字符串等） */
+/** 单个搜索结果对象 → NcmSong；字段名防御性兼容。
+ *  0.1.7 真实形态：{ originalId: number, id: "32位HEX"(加密ID), name, artists: [{name}], album: {name}, duration(ms), playFlag } */
 export function parseNcmSong(item: Record<string, unknown>): NcmSong | null {
-  const encryptedId = asStr(item.encryptedId) ?? asStr(item.encrypted_id);
-  const originalIdRaw = asIdNum(item.originalId) ?? asIdNum(item.original_id) ?? asIdNum(item.id) ?? asIdNum(item.songId);
+  const asHexId = (v: unknown): string | undefined =>
+    typeof v === "string" && /^[0-9a-f]{16,64}$/i.test(v.trim()) ? v.trim() : undefined;
+  const encryptedId = asStr(item.encryptedId) ?? asStr(item.encrypted_id) ?? asHexId(item.id);
+  const originalIdRaw = asIdNum(item.originalId) ?? asIdNum(item.original_id) ?? asIdNum(item.songId);
   const title = asStr(item.name) ?? asStr(item.title);
   if (encryptedId === undefined || originalIdRaw === undefined || title === undefined) return null;
+
+  // 无版权/不可播放的歌搜到了也没法播，直接过滤
+  if (item.playFlag === false) return null;
+  if (item.noCopyrightRcmd !== null && item.noCopyrightRcmd !== undefined) return null;
 
   let artist = "";
   if (Array.isArray(item.artists)) {
@@ -281,13 +289,27 @@ function runNode(execPath: string, args: string[], timeoutMs: number): Promise<N
 }
 
 export function createNcmClient(runner: NcmRunner): NcmClient {
+  /**
+   * 播放后端。Windows 版网易云客户端不支持 orpheus 唤起（实测仅 macOS），
+   * 因此固定走 ncm-cli 内置 mpv；环境变量可覆盖以便 macOS 用户选 orpheus。
+   */
+  const playerArgs = ["--player", process.env.STUDYMOOD_NCM_PLAYER?.trim() || "mpv"];
+
   /** 跑一条命令并要求成功；失败抛错（上层决定如何降级） */
   const run = async (args: string[], timeoutMs = 20000): Promise<unknown> => {
     const res = await runner(args, timeoutMs);
     if (res.code !== 0) {
       throw new Error(`ncm-cli ${args[0]} 失败：${res.stderr.trim() || res.stdout.trim() || `exit ${res.code}`}`);
     }
-    return parseJsonOutput(res.stdout);
+    const parsed = parseJsonOutput(res.stdout);
+    // CLI 对业务失败也返回 exit 0（如未登录时搜索），必须看 success 字段
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const o = parsed as { success?: unknown; message?: unknown; code?: unknown };
+      if (o.success === false && typeof o.message === "string") {
+        throw new Error(o.message);
+      }
+    }
+    return parsed;
   };
 
   const client: NcmClient = {
@@ -330,11 +352,11 @@ export function createNcmClient(runner: NcmRunner): NcmClient {
     },
 
     async playSong(song) {
-      await run(["play", "--song", "--encrypted-id", song.encryptedId, "--original-id", song.originalId], 30000);
+      await run(["play", "--song", ...playerArgs, "--encrypted-id", song.encryptedId, "--original-id", song.originalId], 30000);
     },
 
     async queueAdd(song, opts) {
-      const args = ["queue", "add", "--encrypted-id", song.encryptedId, "--original-id", song.originalId];
+      const args = ["queue", "add", ...playerArgs, "--encrypted-id", song.encryptedId, "--original-id", song.originalId];
       if (opts?.next === true) args.push("--next");
       await run(args, 30000);
     },
