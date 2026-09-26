@@ -8,13 +8,25 @@
 | 生态 | 案例 | 与 StudyMood 的相关度 |
 |---|---|---|
 | **QQ 美化主题（kmeer 生态，B站最热）** | [上杉绘梨衣 2.0（芙兰动态）](https://www.bilibili.com)、[伊蕾娜（魔女之旅）](https://www.bilibili.com/video/BV19kDuBGEot)、洛琪希等 | ★★★★★ — QQNT 也是 Electron 桌面应用，形态最接近；有[子主题制作教程（可二改）](https://www.bilibili.com/video/BV1pkQPYHEuJ) |
-| **DSH 客户端皮肤** | [鸣潮·清宵皮肤（dsh.pub）](https://dsh.pub) | ★★★★ — 开源 UI 皮肤，版权标注规范（画师 Fumi 同人、禁商用） |
+| **DSH 客户端皮肤** | 鸣潮·清宵「弦凝清霄」（taoser258）：<br>[插件详情页](https://dshpluginlist.com/plugins/taoser258/dsh-client-ui-skin-qingxiao/) · [GitHub 仓库](https://github.com/taoser258/dsh-client-ui-skin-qingxiao) · [浅色实物图](https://cdn.jsdelivr.net/gh/taoser258/dsh-client-ui-skin-qingxiao@main/preview/screen-light.png) · [暗色实物图](https://cdn.jsdelivr.net/gh/taoser258/dsh-client-ui-skin-qingxiao@main/preview/screen-dark.png) | ★★★★★ — 开源 UI 皮肤，版权标注规范（画师 Fumi 同人、CC BY-NC-SA、禁商用） |
 | **动态壁纸** | [绘梨衣官方 4K（Steam 卡塞尔之门）](https://steamcommunity.com)、[千千壁纸](https://qianqian.163.com)、Wallpaper Engine | ★★★ — 背景层素材来源 |
 | **Rainmeter** | 桌面小组件 + [音乐播放器皮肤（网易云/Spotify 插件）](https://www.duote.com/soft/10093.html) | ★★★ — 与桌面小窗形态最接近的成熟参考 |
 | **Spicetify（Spotify 美化）** | [Comfy 主题（GitHub 开源）](https://github.com/Comfy-Themes/Spicetify) | ★★★ — 音乐软件主题化的工程范式（theme.js 可配置） |
 | **官方联名标杆** | [ROG Phone 9 × 崩坏3 爱莉希雅主题礼盒](https://www.zol.com.cn)、Steam 官方素材 | ★★ — "角色×产品"的质感上限参考 |
 
 注：用户提到的"爱弥斯"应为崩坏3**爱莉希雅**（粉系天花板）；"清霄"为**鸣潮·清宵**（DSH 皮肤实锤）。
+
+## 一·补充：清宵皮肤实物图亲验（2026-09-26 下载目验）
+
+浅色/暗色两张预览图已下载查看（jsDelivr 镜像可直连，raw.githubusercontent 被墙）。**它好看的原因拆解**：
+
+1. **"内容悬浮于画上"**：全屏立绘铺满窗口，但真正的 UI 只占中央一小块（一个毛玻璃输入卡）——画是主角，界面是客。立绘人物主体放右下，左上留白给题字。
+2. **迎宾页即主题页**：空会话显示角色名竖排题字（"清宵·镇玄司骑"）+ 角色台词（「徒儿，你来了……」），开始对话自动退场——主题感最强的页面恰好是用户最常看到的空态。
+3. **亮暗双模式同构图**：暗色不是换配色，是同一立绘整体压暗 + 青碧粒子流光，输入卡变深色玻璃——一套素材两种情绪。
+4. **配色全部来自立绘**：冰蓝（发）→ 强调色、月白（衣）→ 浅色底、玄夜（暗形态）→ 暗色底、鎏金（金饰）→ 点缀。五色各司其职，没有额外发明颜色。
+5. **克制清单**：侧栏只有窄图标条；粒子特效可关（跟随系统"减少动态效果"）；毛玻璃强度 0-30 档可调；文字配柔光遮罩保可读性。
+
+**映射到 StudyMood 的最优落点**：这套手法的最佳应用位是**空态页/迎宾页**（现在的 🎧 空态）——全屏低透明度绘梨衣立绘 + 台词题字 + 中央毛玻璃描述卡；列表页（音乐库）则保持安静，最多用低透明度背景。这正是文档第二条"动态元素克制"的实例。
 
 ## 二、这些主题共用的好设计（可迁移的模式）
 
