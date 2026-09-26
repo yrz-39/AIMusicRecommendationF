@@ -435,7 +435,13 @@ export function createApp({
       } catch {
         return c.json({ error: "请求体必须是 JSON" }, 400);
       }
-      const item = (body ?? {}) as { title?: unknown; artist?: unknown; durationSec?: unknown; netease?: Record<string, unknown> };
+      const item = (body ?? {}) as {
+        title?: unknown;
+        artist?: unknown;
+        durationSec?: unknown;
+        trackId?: unknown;
+        netease?: Record<string, unknown>;
+      };
       if (typeof item.title !== "string" || item.title.trim() === "" || typeof item.artist !== "string") {
         return c.json({ error: "缺少 title/artist" }, 400);
       }
@@ -445,8 +451,27 @@ export function createApp({
         durationSec: typeof item.durationSec === "number" ? item.durationSec : undefined,
         netease: item.netease,
       };
+      const trackId = typeof item.trackId === "string" ? item.trackId : undefined;
       try {
         const song = await resolvePlaybackSong(playItem);
+        // 解析结果回写曲库：同一首歌下次入队跳过搜索（首次慢、后续快）
+        if (trackId !== undefined && item.netease?.encryptedId === undefined) {
+          try {
+            const tracks = await store.loadTracks();
+            const t = tracks.find((x) => x.id === trackId);
+            if (t !== undefined && t.netease?.encryptedId !== song.encryptedId) {
+              await store.saveTracks(
+                tracks.map((x) =>
+                  x.id === trackId
+                    ? { ...x, netease: { ...x.netease, songId: Number(song.originalId) || x.netease?.songId, encryptedId: song.encryptedId, originalId: song.originalId } }
+                    : x,
+                ),
+              );
+            }
+          } catch {
+            /* 回写失败不影响入队 */
+          }
+        }
         if (mode === "start") {
           await ncm.queueClear();
           await ncm.playSong(song);
@@ -462,7 +487,13 @@ export function createApp({
             return c.json({ ok: true, status: "playing", matchedTitle: song.title, matchedArtist: song.artist });
           }
         }
-        return c.json({ ok: true, status: mode === "start" ? "playing" : "queued", matchedTitle: song.title, matchedArtist: song.artist });
+        return c.json({
+          ok: true,
+          status: mode === "start" ? "playing" : "queued",
+          matchedTitle: song.title,
+          matchedArtist: song.artist,
+          netease: { encryptedId: song.encryptedId, originalId: song.originalId },
+        });
       } catch (err) {
         return c.json({ ok: false, error: (err as Error).message }, 502);
       }
@@ -965,12 +996,8 @@ export function createApp({
    *  Windows 版网易云客户端不支持官方唤起，歌单交付走 ncm 内置播放器，
    *  「教它/基于这首歌推荐/遥控」必须能感知它。paused 且队列非空也返回（条不消失才能恢复播放） */
   app.get("/api/now-playing/current", async (c) => {
-    const playing = await detectPlaying();
-    if (playing.playing) {
-      const tracks = await store.loadTracks();
-      const track = matchPlayingTrack(tracks, playing);
-      return c.json({ ...playing, track: track ?? null });
-    }
+    // 交付会话（ncm 播放器有活跃队列）优先接管播放条：此时 UI 显示/声音/遥控必须同源。
+    // 用户停止队列（queueLength 归零）后自动交还桌面检测（网易云客户端手动听歌场景）。
     if (ncm !== null) {
       try {
         const s = await ncm.state();
@@ -998,8 +1025,14 @@ export function createApp({
           });
         }
       } catch {
-        /* ncm 状态查询失败 → 视为无播放 */
+        /* ncm 状态查询失败 → 落回桌面检测 */
       }
+    }
+    const playing = await detectPlaying();
+    if (playing.playing) {
+      const tracks = await store.loadTracks();
+      const track = matchPlayingTrack(tracks, playing);
+      return c.json({ ...playing, track: track ?? null });
     }
     return c.json({ playing: false });
   });

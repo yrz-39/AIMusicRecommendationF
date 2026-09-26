@@ -242,11 +242,34 @@ export default function App(): React.ReactElement {
         title: rec.track.title,
         artist: rec.track.artist,
         durationSec: rec.track.durationSec,
+        trackId: rec.track.id,
         netease: rec.track.netease ?? {},
       }),
     });
-    const data = (await res.json()) as { ok?: boolean; error?: string };
+    const data = (await res.json()) as {
+      ok?: boolean;
+      error?: string;
+      netease?: { encryptedId?: string; originalId?: string };
+    };
     if (!res.ok || data.ok !== true) throw new Error(data.error ?? "播放失败");
+    // 解析出的播放 ID 回填本地歌单状态：本次会话再播免搜索
+    if (data.netease?.encryptedId !== undefined && data.netease.originalId !== undefined) {
+      setPlaylist((prev) =>
+        prev === null
+          ? prev
+          : {
+              ...prev,
+              playlist: {
+                ...prev.playlist,
+                tracks: prev.playlist.tracks.map((r) =>
+                  r.track.id === rec.track.id
+                    ? { ...r, track: { ...r.track, netease: { ...r.track.netease, ...data.netease } } }
+                    : r,
+                ),
+              },
+            },
+      );
+    }
   }, []);
 
   const playNeteasePlaylist = useCallback(async (): Promise<void> => {

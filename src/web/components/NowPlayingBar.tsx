@@ -103,7 +103,7 @@ export function NowPlayingBar({
     }
   }, [state?.track, onSimilar]);
 
-  const sendControl = useCallback(async (action: "pause" | "resume" | "next" | "prev"): Promise<void> => {
+  const sendControl = useCallback(async (action: "pause" | "resume" | "stop" | "next" | "prev"): Promise<void> => {
     setCtlBusy(true);
     try {
       await fetch("/api/netease/control", {
@@ -154,6 +154,14 @@ export function NowPlayingBar({
             </button>
             <button className="ghost-btn np-btn" title="下一首" disabled={ctlBusy} onClick={() => void sendControl("next")}>
               ⏭
+            </button>
+            <button
+              className="ghost-btn np-btn"
+              title="停止并清空队列（交还桌面检测）"
+              disabled={ctlBusy}
+              onClick={() => void sendControl("stop")}
+            >
+              ⏹
             </button>
           </span>
         )}
