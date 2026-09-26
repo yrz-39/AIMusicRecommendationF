@@ -991,3 +991,43 @@ body.mini-mode .np-btn {
   outline: none;
   border-color: var(--accent);
 }
+
+/* ---------- 批量删除 ---------- */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: rgba(212, 93, 110, 0.08);
+  border: 1px solid rgba(212, 93, 110, 0.25);
+  border-radius: 10px;
+  padding: 8px 14px;
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.bulk-bar .danger-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  color: #fff;
+  background: linear-gradient(90deg, #d45d6e, #c25060);
+}
+
+.bulk-bar .danger-btn:hover {
+  filter: brightness(1.08);
+}
+
+.bulk-bar .dim {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.lib-table input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}

@@ -94,6 +94,28 @@ describe("API", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("批量删除：存在的移除、不存在的忽略、空 ids 400", async () => {
+    const { app, store } = await makeSeededApp();
+    const before = (await store.loadTracks()).length;
+    const res = await app.request("/api/library/delete-tracks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: ["ye-qu", "no-such-1", "no-such-2"] }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await json(res)) as { removed: number };
+    expect(data.removed).toBe(1);
+    expect((await store.loadTracks()).some((t) => t.id === "ye-qu")).toBe(false);
+    expect((await store.loadTracks()).length).toBe(before - 1);
+
+    const empty = await app.request("/api/library/delete-tracks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [] }),
+    });
+    expect(empty.status).toBe(400);
+  });
+
   it("首次运行导入示例库且只执行一次", async () => {
     const store = new MemoryStore();
     expect(await seedSampleIfFirstRun(store)).toBe(true);

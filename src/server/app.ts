@@ -244,6 +244,23 @@ export function createApp({
     return c.json({ ok: true, removed: tracks.length - remaining.length });
   });
 
+  /** 批量删除：一次移除多首（存在的才删，不存在的忽略） */
+  app.post("/api/library/delete-tracks", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "请求体必须是 JSON" }, 400);
+    }
+    const ids = (body as { ids?: unknown } | null)?.ids;
+    if (!Array.isArray(ids) || ids.length === 0) return c.json({ error: "缺少 ids" }, 400);
+    const wanted = new Set(ids.filter((x): x is string => typeof x === "string" && x !== ""));
+    const tracks = await store.loadTracks();
+    const remaining = tracks.filter((t) => !wanted.has(t.id));
+    await store.saveTracks(remaining);
+    return c.json({ ok: true, removed: tracks.length - remaining.length });
+  });
+
   app.post("/api/library/import", async (c) => {
     let body: unknown;
     try {

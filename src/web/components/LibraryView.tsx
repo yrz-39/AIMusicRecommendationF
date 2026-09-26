@@ -30,6 +30,11 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
   const audioInputRef = useRef<HTMLInputElement>(null);
   const [audioParsed, setAudioParsed] = useState<ParsedAudio[] | null>(null);
   const [audioBusy, setAudioBusy] = useState(false);
+  const q = filter.trim().toLowerCase();
+  const filtered = (tracks ?? []).filter(
+    (t) => q === "" || t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q),
+  );
+
   const [prelabel, setPrelabel] = useState<{ done: number; total: number } | null>(null);
   const [prelabelMsg, setPrelabelMsg] = useState<string | null>(null);
 
@@ -182,6 +187,11 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
           const data = (await res.json()) as { error?: string };
           throw new Error(data.error ?? "删除失败");
         }
+        setSelected((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
         await load();
         onChanged();
       } catch (err) {
@@ -190,6 +200,56 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
     },
     [load, onChanged],
   );
+
+  // ---------- 批量删除 ----------
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const toggleSelect = useCallback((id: string): void => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const allVisibleSelected = filtered.length > 0 && filtered.every((t) => selected.has(t.id));
+
+  const toggleSelectAll = useCallback((): void => {
+    setSelected((prev) => {
+      if (filtered.length > 0 && filtered.every((t) => prev.has(t.id))) {
+        // 全不选当前筛选结果
+        const next = new Set(prev);
+        for (const t of filtered) next.delete(t.id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const t of filtered) next.add(t.id);
+      return next;
+    });
+  }, [filtered]);
+
+  const deleteSelected = useCallback(async (): Promise<void> => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    if (!window.confirm(`确定删除所选的 ${ids.length} 首歌吗？（相关的教它记录会保留）`)) return;
+    try {
+      const res = await fetch("/api/library/delete-tracks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) {
+        const data = (await res.json()) as { error?: string };
+        throw new Error(data.error ?? "批量删除失败");
+      }
+      setSelected(new Set());
+      await load();
+      onChanged();
+    } catch (err) {
+      setImportMsg(`批量删除失败：${(err as Error).message}`);
+    }
+  }, [selected, load, onChanged]);
 
   const doImport = useCallback(async (): Promise<void> => {
     setImportMsg(null);
@@ -298,11 +358,6 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
     setFormat(file.name.toLowerCase().endsWith(".json") ? "json" : "csv");
     setImportMsg(`已读取 ${file.name}，检查后点「导入」`);
   }, []);
-
-  const q = filter.trim().toLowerCase();
-  const filtered = (tracks ?? []).filter(
-    (t) => q === "" || t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q),
-  );
 
   const [learnTrackId, setLearnTrackId] = useState<string | null>(null);
   const [learnText, setLearnText] = useState("");
@@ -614,10 +669,31 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
         </section>
       )}
 
+      {selected.size > 0 && (
+        <div className="bulk-bar">
+          <span>已选 {selected.size} 首</span>
+          <button className="danger-btn" onClick={() => void deleteSelected()}>
+            🗑 删除所选
+          </button>
+          <button className="ghost-btn" onClick={() => setSelected(new Set())}>
+            清空选择
+          </button>
+          <span className="dim">提示：配合上方搜索框可按歌手/关键词批量选中</span>
+        </div>
+      )}
+
       {tracks !== null && (
         <table className="lib-table">
           <thead>
             <tr>
+              <th style={{ width: 34 }}>
+                <input
+                  type="checkbox"
+                  aria-label="全选当前列表"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAll}
+                />
+              </th>
               <th>歌曲</th>
               <th>歌手</th>
               <th>风格</th>
@@ -629,6 +705,14 @@ export function LibraryView({ onChanged, llmAvailable }: { onChanged: () => void
           <tbody>
             {filtered.map((t) => (
               <tr key={t.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    aria-label={`选择 ${t.title}`}
+                    checked={selected.has(t.id)}
+                    onChange={() => toggleSelect(t.id)}
+                  />
+                </td>
                 <td className="title">{t.title}</td>
                 <td>{t.artist}</td>
                 <td>{(t.genres ?? []).join(" / ") || "—"}</td>
