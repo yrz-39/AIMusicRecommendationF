@@ -451,7 +451,16 @@ export function createApp({
           await ncm.queueClear();
           await ncm.playSong(song);
         } else {
-          await ncm.queueAdd(song);
+          try {
+            await ncm.queueAdd(song);
+          } catch (addErr) {
+            // 首曲失败时播放会话不存在，queue add 全体报「无播放进程」：
+            // 自愈为清队列并直接播放这一首（第一首成功的歌成为队列起点）
+            if (!(addErr as Error).message.includes("无播放进程")) throw addErr;
+            await ncm.queueClear();
+            await ncm.playSong(song);
+            return c.json({ ok: true, status: "playing", matchedTitle: song.title, matchedArtist: song.artist });
+          }
         }
         return c.json({ ok: true, status: mode === "start" ? "playing" : "queued", matchedTitle: song.title, matchedArtist: song.artist });
       } catch (err) {
