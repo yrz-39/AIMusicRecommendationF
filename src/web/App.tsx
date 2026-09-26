@@ -268,10 +268,18 @@ export default function App(): React.ReactElement {
     if (failed.length === 0) {
       setPlayNote(`已把 ${tracks.length} 首加入播放队列 🎧（ncm 播放器播放；网易云补充的歌听完可「＋ 曲库」）`);
     } else {
-      // 摘要化：只列前 3 条，其余归并计数，避免长墙
-      const shown = failed.slice(0, 3).map((f) => `《${f.title}》：${f.reason}`);
-      const rest = failed.length > 3 ? `……等共 ${failed.length} 首未成功` : "";
-      setPlayNote(`已入队 ${tracks.length - failed.length}/${tracks.length} 首。未成功的：${shown.join("；")}${rest}`);
+      // 按失败类别归组：通道不可播（客户端手动听）/ 匹配失败 / 搜索无结果 / 其他
+      const bucket = (kw: string): string[] => failed.filter((f) => f.reason.includes(kw)).map((f) => `《${f.title}》`);
+      const rest = failed.filter((f) => !["不可播放", "没找到可靠匹配", "搜索无结果"].some((k) => f.reason.includes(k)));
+      const parts: string[] = [];
+      const channel = [...bucket("均不可播放"), ...bucket("在网易云侧当前不可播放")];
+      if (channel.length > 0) parts.push(`开放通道不可播 ${channel.length} 首（${channel.slice(0, 2).join("、")}${channel.length > 2 ? " 等" : ""}）——在网易云客户端手动听`);
+      const noMatch = bucket("没找到可靠匹配");
+      if (noMatch.length > 0) parts.push(`匹配不上 ${noMatch.length} 首（${noMatch.slice(0, 2).join("、")}${noMatch.length > 2 ? " 等" : ""}）`);
+      const noResult = bucket("搜索无结果");
+      if (noResult.length > 0) parts.push(`搜索无结果 ${noResult.length} 首`);
+      for (const f of rest.slice(0, 2)) parts.push(`《${f.title}》：${f.reason}`);
+      setPlayNote(`已入队 ${tracks.length - failed.length}/${tracks.length} 首。未成功：${parts.join("；")}`);
     }
   }, [playlist, playProgress, queueRequest]);
 
